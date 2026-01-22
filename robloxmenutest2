@@ -1,0 +1,17 @@
+local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/xHeptc/Kavo-UI-Library/main/source.lua"))()
+local Window = Library.CreateLib("My Delta Menu", "DarkTheme")
+
+local Tab = Window:NewTab("Main")
+local Section = Tab:NewSection("Player")
+
+Section:NewButton("Speed 100", "Sets speed to 100", function()
+    game.Players.LocalPlayer.Character.Humanoid.WalkSpeed = 100
+end)
+
+Section:NewButton("Jump 100", "Sets jump power", function()
+    game.Players.LocalPlayer.Character.Humanoid.JumpPower = 100
+end)
+
+Section:NewButton("Infinite Yield", "Loads Admin Script", function()
+    loadstring(game:HttpGet('https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source'))()
+end)
