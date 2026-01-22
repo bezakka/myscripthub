@@ -1,90 +1,85 @@
--- Загрузка библиотеки интерфейса
 local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/xHeptc/Kavo-UI-Library/main/source.lua"))()
-local Window = Library.CreateLib("BF MOBILE PREMIUM HUB", "DarkTheme")
+local Window = Library.CreateLib("MOD MENU: BLOX FRUITS EDITION", "Midnight")
 
--- Глобальные переменные для работы функций
-_G.AutoClick = false
-_G.FruitESP = false
+-- Глобальные настройки
+_G.AttackRange = 15
+_G.AutoAttack = false
 
--- ГЛАВНАЯ ВКЛАДКА: ФАРМ
-local FarmTab = Window:NewTab("Автофарм")
-local FarmSection = FarmTab:NewSection("Основные функции")
+-- ВКЛАДКА: СРАЖЕНИЕ
+local CombatTab = Window:NewTab("Бой")
+local CombatSection = CombatTab:NewSection("Улучшения атаки")
 
-FarmSection:NewToggle("Авто-кликер (Melee/Sword)", "Бьет ближайших врагов", function(state)
-    _G.AutoClick = state
+CombatSection:NewSlider("Дальность ударов (Range)", "Как у Будды (аккуратно!)", 50, 15, function(v)
+    _G.AttackRange = v
+end)
+
+CombatSection:NewToggle("Включить Reach/Range", "Удары будут доставать дальше", function(state)
+    _G.AutoRange = state
     spawn(function()
-        while _G.AutoClick do
-            local vim = game:GetService("VirtualInputManager")
-            vim:SendMouseButtonEvent(0, 0, 0, true, game, 1)
-            vim:SendMouseButtonEvent(0, 0, 0, false, game, 1)
-            task.wait(0.1)
+        while _G.AutoRange do
+            pcall(function()
+                -- Увеличиваем хитбокс активного оружия
+                local tool = game.Players.LocalPlayer.Character:FindFirstChildOfClass("Tool")
+                if tool and tool:FindFirstChild("Handle") then
+                    tool.Handle.Size = Vector3.new(_G.AttackRange, _G.AttackRange, _G.AttackRange)
+                    tool.Handle.CanCollide = false
+                end
+            end)
+            task.wait(0.5)
         end
     end)
 end)
 
-FarmSection:NewButton("Fruit ESP (Поиск фруктов)", "Подсвечивает фрукты на карте", function()
-    for _, v in pairs(game.Workspace:GetChildren()) do
-        if string.find(v.Name, "Fruit") then
-            if not v:FindFirstChild("Highlight") then
-                local h = Instance.new("Highlight", v)
-                h.FillColor = Color3.fromRGB(0, 255, 0)
-                h.OutlineColor = Color3.fromRGB(255, 255, 255)
+-- ВКЛАДКА: ESP (ВИЗУАЛЫ)
+local VisualTab = Window:NewTab("Визуал/ESP")
+local VSection = VisualTab:NewSection("Продвинутый ESP")
+
+VSection:NewButton("Включить Full ESP", "Ники + Дистанция + ХП", function()
+    local function createESP(plr)
+        local bgui = Instance.new("BillboardGui", plr.Character.Head)
+        bgui.Name = "ESP_UI"
+        bgui.AlwaysOnTop = true
+        bgui.Size = UDim2.new(0, 200, 0, 50)
+        bgui.StudsOffset = Vector3.new(0, 3, 0)
+
+        local info = Instance.new("TextLabel", bgui)
+        info.Size = UDim2.new(1, 0, 1, 0)
+        info.BackgroundTransparency = 1
+        info.TextColor3 = Color3.fromRGB(255, 0, 0)
+        info.TextStrokeTransparency = 0
+        info.TextScaled = false
+        info.TextSize = 14
+
+        spawn(function()
+            while plr and plr.Character and plr.Character:FindFirstChild("Head") do
+                local dist = math.floor((game.Players.LocalPlayer.Character.Head.Position - plr.Character.Head.Position).Magnitude)
+                local hp = math.floor(plr.Character:FindFirstChildOfClass("Humanoid").Health)
+                info.Text = string.format("%s\n[%s m] | HP: %s", plr.Name, dist, hp)
+                task.wait(0.1)
             end
+            bgui:Destroy()
+        end)
+    end
+
+    for _, p in pairs(game.Players:GetPlayers()) do
+        if p ~= game.Players.LocalPlayer and p.Character and p.Character:FindFirstChild("Head") then
+            createESP(p)
         end
     end
 end)
 
--- ВКЛАДКА: ИГРОК
-local PlayerTab = Window:NewTab("Игрок")
-local PSection = PlayerTab:NewSection("Характеристики")
-
-PSection:NewSlider("Скорость бега", "Стандарт: 16", 500, 16, function(s)
+-- ВКЛАДКА: ПЕРЕМЕЩЕНИЕ
+local MoveTab = Window:NewTab("Движение")
+MoveTab:NewSection("Скорость"):NewSlider("WalkSpeed", "Бег", 500, 16, function(s)
     game.Players.LocalPlayer.Character.Humanoid.WalkSpeed = s
 end)
 
-PSection:NewSlider("Сила прыжка", "Стандарт: 50", 500, 50, function(s)
-    game.Players.LocalPlayer.Character.Humanoid.JumpPower = s
-end)
-
--- ВКЛАДКА: ТЕЛЕПОРТЫ (C1 - Первый мир)
-local TPTab = Window:NewTab("Телепорты")
-local TPSection = TPTab:NewSection("Острова Первого моря")
-
-TPSection:NewButton("Jungle (Джунгли)", "Телепорт к квесту обезьян", function()
-    game.Players.LocalPlayer.Character.HumanoidRootPart.CFrame = CFrame.new(-1612, 36, 147)
-end)
-
-TPSection:NewButton("Pirate Village", "Телепорт к клоуну Багги", function()
-    game.Players.LocalPlayer.Character.HumanoidRootPart.CFrame = CFrame.new(-1146, 4, 3827)
-end)
-
--- ВКЛАДКА: АДМИНКА
-local AdminTab = Window:NewTab("Дополнительно")
-AdminTab:NewSection("Скрипты"):NewButton("Infinite Yield", "Командная строка (;fly и т.д.)", function()
-    loadstring(game:HttpGet('https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source'))()
-end)
-
--- АНТИ-АФК (Защита от вылета)
-local VirtualUser = game:service'VirtualUser'
-game:service'Players'.LocalPlayer.Idled:connect(function()
-    VirtualUser:CaptureController()
-    VirtualUser:ClickButton2(Vector2.new())
-end)
-
--- СОЗДАНИЕ ПЛАВАЮЩЕЙ КНОПКИ (Чтобы открывать/закрывать меню)
-local ScreenGui = Instance.new("ScreenGui")
-local Toggle = Instance.new("TextButton")
-
-ScreenGui.Parent = game:GetService("CoreGui")
-Toggle.Parent = ScreenGui
-Toggle.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-Toggle.BorderSizePixel = 2
-Toggle.Position = UDim2.new(0.1, 0, 0.1, 0)
-Toggle.Size = UDim2.new(0, 45, 0, 45)
-Toggle.Text = "MENU"
-Toggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-Toggle.Draggable = true -- Кнопку можно двигать пальцем
-
-Toggle.MouseButton1Click:Connect(function()
-    Library:ToggleUI()
-end)
+-- ПЛАВАЮЩАЯ КНОПКА (UI TOGGLE)
+local sg = Instance.new("ScreenGui", game:GetService("CoreGui"))
+local btn = Instance.new("TextButton", sg)
+btn.Size = UDim2.new(0, 50, 0, 50)
+btn.Position = UDim2.new(0, 20, 0, 20)
+btn.Text = "MOD"
+btn.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
+btn.Draggable = true
+btn.MouseButton1Click:Connect(function() Library:ToggleUI() end)
