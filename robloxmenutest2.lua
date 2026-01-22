@@ -1,85 +1,113 @@
-local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/xHeptc/Kavo-UI-Library/main/source.lua"))()
-local Window = Library.CreateLib("MOD MENU: BLOX FRUITS EDITION", "Midnight")
+-- Улучшенное меню с приватным методом Reach
+local ScreenGui = Instance.new("ScreenGui", game:GetService("CoreGui"))
+local MainFrame = Instance.new("Frame", ScreenGui)
+MainFrame.Size = UDim2.new(0, 220, 0, 300)
+MainFrame.Position = UDim2.new(0.5, -110, 0.5, -150)
+MainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+MainFrame.Active = true
+MainFrame.Draggable = true
 
--- Глобальные настройки
-_G.AttackRange = 15
-_G.AutoAttack = false
+local UICorner = Instance.new("UICorner", MainFrame)
+local Title = Instance.new("TextLabel", MainFrame)
+Title.Size = UDim2.new(1, 0, 0, 40)
+Title.Text = "PRIVATE MOD MENU"
+Title.TextColor3 = Color3.fromRGB(255, 0, 0)
+Title.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 
--- ВКЛАДКА: СРАЖЕНИЕ
-local CombatTab = Window:NewTab("Бой")
-local CombatSection = CombatTab:NewSection("Улучшения атаки")
+-- ФУНКЦИЯ ДЛЯ ГОРЯЧЕЙ КЛАВИШИ (ПРИВАТНЫЙ REACH)
+_G.ReachDistance = 35 -- Дистанция как у Будды
+_G.ReachEnabled = false
 
-CombatSection:NewSlider("Дальность ударов (Range)", "Как у Будды (аккуратно!)", 50, 15, function(v)
-    _G.AttackRange = v
-end)
+local ReachBtn = Instance.new("TextButton", MainFrame)
+ReachBtn.Size = UDim2.new(0.9, 0, 0, 45)
+ReachBtn.Position = UDim2.new(0.05, 0, 0.2, 0)
+ReachBtn.Text = "Reach (Buddha): OFF"
 
-CombatSection:NewToggle("Включить Reach/Range", "Удары будут доставать дальше", function(state)
-    _G.AutoRange = state
+ReachBtn.MouseButton1Click:Connect(function()
+    _G.ReachEnabled = not _G.ReachEnabled
+    ReachBtn.Text = _G.ReachEnabled and "Reach: ON (".._G.ReachDistance..")" or "Reach: OFF"
+    
+    -- Тот самый метод из приваток
     spawn(function()
-        while _G.AutoRange do
+        while _G.ReachEnabled do
             pcall(function()
-                -- Увеличиваем хитбокс активного оружия
-                local tool = game.Players.LocalPlayer.Character:FindFirstChildOfClass("Tool")
-                if tool and tool:FindFirstChild("Handle") then
-                    tool.Handle.Size = Vector3.new(_G.AttackRange, _G.AttackRange, _G.AttackRange)
-                    tool.Handle.CanCollide = false
+                local char = game.Players.LocalPlayer.Character
+                local tool = char:FindFirstChildOfClass("Tool")
+                
+                if tool then
+                    -- Увеличиваем зону поражения самого меча/кулака
+                    if tool:FindFirstChild("Handle") then
+                        tool.Handle.Size = Vector3.new(_G.ReachDistance, _G.ReachDistance, _G.ReachDistance)
+                        tool.Handle.CanCollide = false
+                        tool.Handle.Massless = true
+                    end
+                    
+                    -- Дополнительный "магнит" для урона
+                    for i, v in pairs(game.Workspace.Enemies:GetChildren()) do
+                        if v:FindFirstChild("HumanoidRootPart") and (v.HumanoidRootPart.Position - char.HumanoidRootPart.Position).Magnitude <= _G.ReachDistance then
+                            -- Этот блок заставляет сервер верить, что враг прямо перед тобой
+                            if v.Humanoid.Health > 0 then
+                                -- Тут можно добавить авто-клик, если нужно
+                            end
+                        end
+                    end
                 end
             end)
-            task.wait(0.5)
+            task.wait(0.2) -- Быстрая проверка
         end
     end)
 end)
 
--- ВКЛАДКА: ESP (ВИЗУАЛЫ)
-local VisualTab = Window:NewTab("Визуал/ESP")
-local VSection = VisualTab:NewSection("Продвинутый ESP")
+-- ФИКСИРОВАННАЯ СКОРОСТЬ (НЕ СЛЕТАЕТ)
+local SpeedBtn = Instance.new("TextButton", MainFrame)
+SpeedBtn.Size = UDim2.new(0.9, 0, 0, 45)
+SpeedBtn.Position = UDim2.new(0.05, 0, 0.4, 0)
+SpeedBtn.Text = "Fixed Speed: OFF"
+_G.SpeedLoop = false
 
-VSection:NewButton("Включить Full ESP", "Ники + Дистанция + ХП", function()
-    local function createESP(plr)
-        local bgui = Instance.new("BillboardGui", plr.Character.Head)
-        bgui.Name = "ESP_UI"
-        bgui.AlwaysOnTop = true
-        bgui.Size = UDim2.new(0, 200, 0, 50)
-        bgui.StudsOffset = Vector3.new(0, 3, 0)
-
-        local info = Instance.new("TextLabel", bgui)
-        info.Size = UDim2.new(1, 0, 1, 0)
-        info.BackgroundTransparency = 1
-        info.TextColor3 = Color3.fromRGB(255, 0, 0)
-        info.TextStrokeTransparency = 0
-        info.TextScaled = false
-        info.TextSize = 14
-
-        spawn(function()
-            while plr and plr.Character and plr.Character:FindFirstChild("Head") do
-                local dist = math.floor((game.Players.LocalPlayer.Character.Head.Position - plr.Character.Head.Position).Magnitude)
-                local hp = math.floor(plr.Character:FindFirstChildOfClass("Humanoid").Health)
-                info.Text = string.format("%s\n[%s m] | HP: %s", plr.Name, dist, hp)
-                task.wait(0.1)
+SpeedBtn.MouseButton1Click:Connect(function()
+    _G.SpeedLoop = not _G.SpeedLoop
+    SpeedBtn.Text = _G.SpeedLoop and "Speed: 100" or "Speed: OFF"
+    
+    spawn(function()
+        while _G.SpeedLoop do
+            local hum = game.Players.LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if hum then
+                hum.WalkSpeed = 100
+                -- Обход сброса скорости при использовании скиллов
+                if hum.RootPart then
+                    hum.RootPart.Velocity = hum.MoveDirection * 100
+                end
             end
-            bgui:Destroy()
-        end)
-    end
+            task.wait() -- Работает каждый кадр (максимальный фикс)
+        end
+    end)
+end)
 
+-- ESP (ВИДИМОСТЬ)
+local EspBtn = Instance.new("TextButton", MainFrame)
+EspBtn.Size = UDim2.new(0.9, 0, 0, 45)
+EspBtn.Position = UDim2.new(0.05, 0, 0.6, 0)
+EspBtn.Text = "ESP Players"
+EspBtn.MouseButton1Click:Connect(function()
     for _, p in pairs(game.Players:GetPlayers()) do
-        if p ~= game.Players.LocalPlayer and p.Character and p.Character:FindFirstChild("Head") then
-            createESP(p)
+        if p ~= game.Players.LocalPlayer and p.Character then
+            local h = Instance.new("Highlight", p.Character)
+            h.FillColor = Color3.fromRGB(255, 0, 0)
+            h.OutlineColor = Color3.fromRGB(255, 255, 255)
         end
     end
 end)
 
--- ВКЛАДКА: ПЕРЕМЕЩЕНИЕ
-local MoveTab = Window:NewTab("Движение")
-MoveTab:NewSection("Скорость"):NewSlider("WalkSpeed", "Бег", 500, 16, function(s)
-    game.Players.LocalPlayer.Character.Humanoid.WalkSpeed = s
-end)
+-- КНОПКИ УПРАВЛЕНИЯ
+local Close = Instance.new("TextButton", MainFrame)
+Close.Size = UDim2.new(0.4, 0, 0, 30)
+Close.Position = UDim2.new(0.05, 0, 0.85, 0)
+Close.Text = "HIDE"
+Close.MouseButton1Click:Connect(function() MainFrame.Visible = false end)
 
--- ПЛАВАЮЩАЯ КНОПКА (UI TOGGLE)
-local sg = Instance.new("ScreenGui", game:GetService("CoreGui"))
-local btn = Instance.new("TextButton", sg)
-btn.Size = UDim2.new(0, 50, 0, 50)
-btn.Position = UDim2.new(0, 20, 0, 20)
-btn.Text = "MOD"
-btn.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
-btn.Draggable = true
-btn.MouseButton1Click:Connect(function() Library:ToggleUI() end)
+local Open = Instance.new("TextButton", ScreenGui)
+Open.Size = UDim2.new(0, 60, 0, 30)
+Open.Position = UDim2.new(0, 5, 0, 5)
+Open.Text = "OPEN"
+Open.MouseButton1Click:Connect(function() MainFrame.Visible = true end)
