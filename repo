@@ -1,0 +1,1912 @@
+import asyncio
+import sqlite3
+import random
+import logging
+import os
+import time
+from datetime import date
+from threading import Thread, Lock
+from collections import defaultdict
+
+from flask import Flask
+from aiogram import Bot, Dispatcher, F, types
+from aiogram.filters import Command
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.fsm.storage.memory import MemoryStorage
+
+# ══════════════════════════════════════════════
+#              НАСТРОЙКИ
+# ══════════════════════════════════════════════
+TOKEN = os.environ.get("TOKEN", "СЮДА_ТОКЕН")
+
+# ── Список админов (username без @) ──
+ADMINS = {"TheNonPlace"}
+
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+
+# ══════════════════════════════════════════════
+#       FLASK KEEP-ALIVE
+# ══════════════════════════════════════════════
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def home():
+    return "Bot alive!", 200
+
+def keep_alive():
+    def run():
+        flask_app.run(host='0.0.0.0', port=8080, debug=False, use_reloader=False)
+    Thread(target=run, daemon=True).start()
+
+# ══════════════════════════════════════════════
+#       АНТИСПАМ
+# ══════════════════════════════════════════════
+_cd_store = defaultdict(dict)
+_cd_lock  = Lock()
+COOLDOWNS = {"dice": 3, "slots": 5, "coin": 3, "bet": 4, "duel": 8, "give": 5, "rp": 3}
+
+def check_cd(uid: int, cmd: str) -> float:
+    cd = COOLDOWNS.get(cmd, 3)
+    with _cd_lock:
+        last    = _cd_store[uid].get(cmd, 0)
+        elapsed = time.time() - last
+        if elapsed < cd:
+            return round(cd - elapsed, 1)
+        _cd_store[uid][cmd] = time.time()
+        return 0
+
+_work_cd     = {}
+_work_cd_lock = Lock()
+WORK_CD = {"work": 3600, "crime": 1800, "mine": 7200, "fish": 2700, "hunt": 5400}
+
+def check_work_cd(uid: int, cmd: str) -> int:
+    key = f"{uid}_{cmd}"
+    with _work_cd_lock:
+        last    = _work_cd.get(key, 0)
+        elapsed = time.time() - last
+        cd      = WORK_CD.get(cmd, 3600)
+        if elapsed < cd:
+            return int(cd - elapsed)
+        _work_cd[key] = time.time()
+        return 0
+
+def fmt_time(s: int) -> str:
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    if h:   return f"{h}ч {m}м"
+    if m:   return f"{m}м {sec}с"
+    return f"{sec}с"
+
+# ══════════════════════════════════════════════
+#         БАЗА ДАННЫХ
+# ══════════════════════════════════════════════
+DB_PATH = "game.db"
+db_lock = Lock()
+
+def db_exec(query: str, params=(), fetch=None):
+    with db_lock:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        try:
+            cur = conn.cursor()
+            cur.execute(query, params)
+            result = None
+            if fetch == 'one':  result = cur.fetchone()
+            elif fetch == 'all': result = cur.fetchall()
+            conn.commit()
+            return result
+        except Exception as e:
+            logging.error(f"DB ERROR: {e} | query={query} | params={params}")
+            conn.rollback()
+            return None
+        finally:
+            conn.close()
+
+def db_many(queries: list):
+    with db_lock:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        try:
+            cur = conn.cursor()
+            for q, p in queries:
+                cur.execute(q, p)
+            conn.commit()
+        except Exception as e:
+            logging.error(f"DB MANY ERROR: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
+
+def init_db():
+    with db_lock:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        cur  = conn.cursor()
+
+        # Основная таблица
+        cur.execute('''CREATE TABLE IF NOT EXISTS users (
+            id            INTEGER PRIMARY KEY,
+            username      TEXT    DEFAULT 'Игрок',
+            balance       INTEGER DEFAULT 1000,
+            exp           INTEGER DEFAULT 0,
+            lvl           INTEGER DEFAULT 1,
+            wins          INTEGER DEFAULT 0,
+            losses        INTEGER DEFAULT 0,
+            total_earned  INTEGER DEFAULT 0,
+            total_lost    INTEGER DEFAULT 0,
+            last_daily    TEXT    DEFAULT '',
+            reputation    INTEGER DEFAULT 0,
+            inventory     TEXT    DEFAULT '',
+            registered_at TEXT    DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        # Миграция — добавляем колонки если их нет (для старых БД)
+        existing = [row[1] for row in cur.execute("PRAGMA table_info(users)").fetchall()]
+        migrations = {
+            "reputation": "INTEGER DEFAULT 0",
+            "inventory":  "TEXT DEFAULT ''",
+        }
+        for col, definition in migrations.items():
+            if col not in existing:
+                cur.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
+                logging.info(f"Migrated: added column {col}")
+
+        cur.execute('''CREATE TABLE IF NOT EXISTS duels (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            challenger_id INTEGER,
+            opponent_id   INTEGER,
+            bet           INTEGER,
+            winner_id     INTEGER,
+            chal_roll     INTEGER DEFAULT 0,
+            opp_roll      INTEGER DEFAULT 0,
+            created_at    TEXT    DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        cur.execute('''CREATE TABLE IF NOT EXISTS bets (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER,
+            amount     INTEGER,
+            game       TEXT,
+            won        INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        cur.execute('''CREATE TABLE IF NOT EXISTS shop_items (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT,
+            emoji       TEXT,
+            price       INTEGER,
+            description TEXT,
+            effect      TEXT
+        )''')
+
+        cur.execute('''CREATE TABLE IF NOT EXISTS marriages (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user1_id   INTEGER,
+            user2_id   INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        # Заполняем магазин если пустой
+        if cur.execute("SELECT COUNT(*) FROM shop_items").fetchone()[0] == 0:
+            items = [
+                ("Удочка",          "🎣", 500,  "Улучшает рыбалку (+25%)",          "fish_bonus"),
+                ("Кирка",           "⛏️", 800,  "Улучшает добычу руды (+30%)",      "mine_bonus"),
+                ("Пистолет",        "🔫", 1200, "Усиляет охоту (+35%)",             "hunt_bonus"),
+                ("Маска",           "🎭", 600,  "Снижает риск при крайм (-15%)",    "crime_bonus"),
+                ("Счастливый кубик","🍀", 1500, "Улучшает шансы в /dice",           "luck"),
+                ("VIP карта",       "💳", 5000, "+20% к заработку на работе",        "vip"),
+                ("Броня",           "🛡️", 2000, "Защита в дуэлях (+1 к броску)",   "armor"),
+                ("Энергетик",       "⚡", 200,  "Снимает кулдаун работы",           "energy"),
+            ]
+            cur.executemany(
+                "INSERT INTO shop_items (name,emoji,price,description,effect) VALUES (?,?,?,?,?)",
+                items
+            )
+
+        conn.commit()
+        conn.close()
+        logging.info("DB initialized OK")
+
+init_db()
+
+# ══════════════════════════════════════════════
+#           ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ══════════════════════════════════════════════
+
+def get_user(uid, username=None):
+    row = db_exec("SELECT * FROM users WHERE id=?", (uid,), fetch='one')
+    if row is None:
+        name = username or "Игрок"
+        db_exec("INSERT INTO users (id, username) VALUES (?,?)", (uid, name))
+        row = db_exec("SELECT * FROM users WHERE id=?", (uid,), fetch='one')
+    elif username and username != row[1]:
+        db_exec("UPDATE users SET username=? WHERE id=?", (username, uid))
+    return row
+
+def get_balance(uid) -> int:
+    row = db_exec("SELECT balance FROM users WHERE id=?", (uid,), fetch='one')
+    if row is None:
+        get_user(uid)
+        return 0
+    return row[0]  # 0 — тоже валидный баланс!
+
+def get_username_db(uid) -> str:
+    row = db_exec("SELECT username FROM users WHERE id=?", (uid,), fetch='one')
+    return row[0] if row is not None else "Игрок"
+
+def get_inventory(uid) -> list:
+    row = db_exec("SELECT inventory FROM users WHERE id=?", (uid,), fetch='one')
+    if row is None or not row[0]:
+        return []
+    return [e for e in row[0].split(",") if e.strip()]
+
+def has_item(uid, effect) -> bool:
+    return effect in get_inventory(uid)
+
+def add_to_inventory(uid, effect):
+    inv = get_inventory(uid)
+    if effect not in inv:
+        inv.append(effect)
+        db_exec("UPDATE users SET inventory=? WHERE id=?", (",".join(inv), uid))
+
+def remove_from_inventory(uid, effect):
+    inv = get_inventory(uid)
+    if effect in inv:
+        inv.remove(effect)
+        db_exec("UPDATE users SET inventory=? WHERE id=?", (",".join(inv), uid))
+
+def add_exp_lvl(uid, amount) -> list:
+    user = get_user(uid)
+    balance, exp, lvl = user[2], user[3], user[4]
+    new_exp = exp + amount
+    msgs = []
+    while new_exp >= lvl * 100 and lvl < 100:
+        new_exp -= lvl * 100
+        lvl     += 1
+        reward   = lvl * 300
+        balance += reward
+        msgs.append(f"🎉 Уровень <b>{lvl}</b>! +{reward:,}💰")
+    db_exec("UPDATE users SET exp=?,lvl=?,balance=? WHERE id=?", (new_exp, lvl, balance, uid))
+    return msgs
+
+def get_rank(lvl) -> str:
+    if lvl >= 90: return "🌟 Бог"
+    if lvl >= 80: return "👑 Легенда"
+    if lvl >= 60: return "💎 Мастер"
+    if lvl >= 40: return "🥇 Ветеран"
+    if lvl >= 20: return "🥈 Опытный"
+    if lvl >= 10: return "🥉 Новичок+"
+    return "🔰 Новичок"
+
+def pbar(exp, mx, n=10) -> str:
+    f = int((exp / max(mx, 1)) * n)
+    return "█" * f + "░" * (n - f)
+
+def is_married(uid):
+    return db_exec(
+        "SELECT * FROM marriages WHERE user1_id=? OR user2_id=?",
+        (uid, uid), fetch='one'
+    )
+
+# ══════════════════════════════════════════════
+#       РП ДЕЙСТВИЯ
+# ══════════════════════════════════════════════
+RP_ACTIONS = {
+    "погладить":  {"emoji":"🤚","texts":["{f} нежно гладит {t} по голове 🤚","{f} ласково треплет {t} по волосам 💆","{f} гладит {t} — стало теплее ✨"]},
+    "обнять":     {"emoji":"🤗","texts":["{f} крепко обнимает {t} 🤗","{f} заключает {t} в тёплые объятия 💞","{f} обнимает {t} и не отпускает ❤️"]},
+    "поцеловать": {"emoji":"💋","texts":["{f} целует {t} в щёчку 💋","{f} нежно целует {t} 😘","{f} дарит {t} воздушный поцелуй 💨💋"]},
+    "ударить":    {"emoji":"👊","texts":["{f} бьёт {t} со всей силы 👊","{f} влепляет {t} пощёчину 🖐","{f} даёт {t} леща 😤"]},
+    "укусить":    {"emoji":"😬","texts":["{f} кусает {t} за руку 😬","{f} впивается зубами в {t} 🦷","{f} легонько кусает {t} 😏"]},
+    "обозвать":   {"emoji":"😡","texts":["{f} обзывает {t} нехорошими словами 😡","{f} орёт на {t} как ненормальный 🗣","{f} высказывает {t} всё что думает 💢"]},
+    "подмигнуть": {"emoji":"😉","texts":["{f} подмигивает {t} 😉","{f} игриво подмигивает {t} ✨","{f} бросает загадочный взгляд на {t} 👀"]},
+    "обнюхать":   {"emoji":"👃","texts":["{f} подозрительно нюхает {t} 👃","{f} обнюхивает {t} как собака 🐶","{f} говорит что {t} пахнет странно 😂"]},
+    "покормить":  {"emoji":"🍕","texts":["{f} угощает {t} пиццей 🍕","{f} кормит {t} с ложечки 🥄","{f} протягивает {t} бутерброд 🥪"]},
+    "похвалить":  {"emoji":"👏","texts":["{f} громко хлопает для {t} 👏","{f} говорит что {t} — лучший! 🌟","{f} восхищается {t} 🥹"]},
+    "стрелять":   {"emoji":"🔫","texts":["{f} стреляет в {t} из водяного пистолета 💦","{f} целится в {t} пальцем 🔫","{f} бросает в {t} снежком ❄️"]},
+    "обидеть":    {"emoji":"😢","texts":["{f} обижает {t} злым взглядом 😤","{f} делает {t} больно словами 😢","{f} игнорирует {t} 🙄"]},
+}
+RP_ALIASES = {
+    "гладить":"погладить","обнимать":"обнять","целовать":"поцеловать",
+    "поцелуй":"поцеловать","бить":"ударить","ударь":"ударить",
+    "кусать":"укусить","укуси":"укусить","подмигни":"подмигнуть",
+    "обнюхи":"обнюхать","покорми":"покормить","похвали":"похвалить",
+    "выстрелить":"стрелять","обидь":"обидеть",
+}
+
+# ══════════════════════════════════════════════
+#              КОМАНДЫ — ПРОФИЛЬ
+# ══════════════════════════════════════════════
+
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    get_user(message.from_user.id, message.from_user.first_name)
+    await message.answer(
+        f"🎮 <b>Добро пожаловать в GameBot!</b>\n\n"
+        f"Привет, <b>{message.from_user.first_name}</b>! 👋\n"
+        f"💰 Стартовый баланс: <b>1,000</b>\n\n"
+        f"📋 /help — все команды\n"
+        f"🎁 /daily — ежедневный бонус\n"
+        f"💼 /work — заработать денег\n"
+        f"🏪 /shop — магазин предметов",
+        parse_mode="HTML"
+    )
+
+@dp.message(Command("reg"))
+async def cmd_reg(message: types.Message):
+    user = get_user(message.from_user.id, message.from_user.first_name)
+    await message.answer(
+        f"✅ <b>Зарегистрирован!</b>\n"
+        f"👤 {message.from_user.first_name}\n"
+        f"💰 Баланс: <b>{user[2]:,}</b>\n"
+        f"🆙 Уровень: <b>{user[4]}</b>",
+        parse_mode="HTML"
+    )
+
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    await message.answer(
+        "📖 <b>Все команды:</b>\n\n"
+        "👤 <b>Профиль</b>\n"
+        "/profile — профиль (ответом — чужой)\n"
+        "/balance — баланс\n"
+        "/top — топ по деньгам\n"
+        "/toprep — топ по репутации\n"
+        "/stats — статистика\n\n"
+        "💰 <b>Экономика</b>\n"
+        "/daily — ежедневный бонус\n"
+        "/work — работа (кд 1ч)\n"
+        "/crime — преступление (кд 30м)\n"
+        "/mine — майнинг (кд 2ч)\n"
+        "/fish — рыбалка (кд 45м)\n"
+        "/hunt — охота (кд 90м)\n"
+        "/give [сумма] — перевод ответом\n\n"
+        "🏪 <b>Магазин</b>\n"
+        "/shop — магазин\n"
+        "/inventory — инвентарь\n\n"
+        "🎲 <b>Игры</b>\n"
+        "/dice [ставка] — кубик\n"
+        "/slots [ставка] — слоты (мин 50)\n"
+        "/coin [ставка] орёл|решка\n"
+        "/bet [сумма] — рулетка\n"
+        "/blackjack [ставка] — блэкджек\n\n"
+        "⚔️ /duel [ставка] — дуэль ответом\n\n"
+        "💍 <b>Отношения</b>\n"
+        "/marry /divorce /spouse\n\n"
+        "⭐ /rep — оценить репутацию ответом\n\n"
+        "💞 <b>РП</b> (ответом):\n"
+        "/погладить /обнять /поцеловать\n"
+        "/ударить /укусить /подмигнуть\n"
+        "/обозвать /обнюхать /покормить\n"
+        "/похвалить /стрелять /обидеть",
+        parse_mode="HTML"
+    )
+
+@dp.message(Command("profile"))
+async def cmd_profile(message: types.Message):
+    if message.reply_to_message:
+        target = message.reply_to_message.from_user
+        u      = get_user(target.id, target.first_name)
+        name   = target.first_name
+    else:
+        u    = get_user(message.from_user.id, message.from_user.first_name)
+        name = message.from_user.first_name
+
+    bal, exp, lvl     = u[2], u[3], u[4]
+    wins, losses      = u[5], u[6]
+    earned, lost      = u[7], u[8]
+    rep               = u[10] if len(u) > 10 else 0
+    inv_raw           = u[11] if len(u) > 11 else ""
+    items_count       = len([x for x in (inv_raw or "").split(",") if x.strip()])
+
+    rank  = get_rank(lvl)
+    mx    = lvl * 100
+    total = wins + losses
+    wr    = round(wins / total * 100 if total else 0, 1)
+
+    marry = is_married(u[0])
+    marry_line = ""
+    if marry:
+        pid  = marry[2] if marry[1] == u[0] else marry[1]
+        marry_line = f"💍 Партнёр: <b>{get_username_db(pid)}</b>\n"
+
+    await message.answer(
+        f"{rank}\n👤 <b>{name}</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"💰 Баланс: <b>{bal:,}</b>\n"
+        f"🆙 Уровень: <b>{lvl}/100</b>\n"
+        f"✨ EXP: <b>{exp}/{mx}</b>  [{pbar(exp, mx)}]\n"
+        f"⭐ Репутация: <b>{rep:+}</b>\n"
+        f"{marry_line}"
+        f"🎒 Предметов: <b>{items_count}</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"⚔️ Победы: <b>{wins}</b>  ❌ Поражений: <b>{losses}</b>\n"
+        f"📈 Винрейт: <b>{wr}%</b>\n"
+        f"💵 Заработано: <b>{earned:,}</b>\n"
+        f"💸 Потрачено: <b>{lost:,}</b>",
+        parse_mode="HTML"
+    )
+
+@dp.message(Command("balance"))
+async def cmd_balance(message: types.Message):
+    bal = get_balance(message.from_user.id)
+    await message.answer(f"💰 Твой баланс: <b>{bal:,}</b>", parse_mode="HTML")
+
+@dp.message(Command("daily"))
+async def cmd_daily(message: types.Message):
+    u     = get_user(message.from_user.id, message.from_user.first_name)
+    today = str(date.today())
+    if u[9] == today:
+        return await message.answer("⏰ Уже получал сегодня!\nВозвращайся завтра 🌙")
+
+    bonus = random.randint(150, 500) + u[4] * 5
+    extra = ""
+    if is_married(u[0]):
+        bonus = int(bonus * 1.1)
+        extra = "\n💍 +10% бонус от партнёра!"
+
+    db_exec("UPDATE users SET balance=balance+?,last_daily=? WHERE id=?",
+            (bonus, today, message.from_user.id))
+    lvl_msgs = add_exp_lvl(message.from_user.id, 20)
+
+    text = f"🎁 <b>Ежедневный бонус!</b>\n💰 +<b>{bonus:,}</b>\n✨ +20 EXP{extra}"
+    if lvl_msgs:
+        text += "\n" + "\n".join(lvl_msgs)
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("top"))
+async def cmd_top(message: types.Message):
+    rows   = db_exec("SELECT username,balance,lvl,wins FROM users ORDER BY balance DESC LIMIT 10", fetch='all')
+    medals = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+    text   = "🏆 <b>ТОП-10 по балансу</b>\n━━━━━━━━━━━━━━\n"
+    for i, (nm, bl, lv, w) in enumerate(rows or []):
+        text += f"{medals[i]} <b>{nm}</b> — {bl:,}💰 | Lv.{lv} | ⚔️{w}\n"
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("toprep"))
+async def cmd_toprep(message: types.Message):
+    rows   = db_exec("SELECT username,reputation,lvl FROM users ORDER BY reputation DESC LIMIT 10", fetch='all')
+    medals = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+    text   = "⭐ <b>ТОП-10 по репутации</b>\n━━━━━━━━━━━━━━\n"
+    for i, (nm, rp, lv) in enumerate(rows or []):
+        text += f"{medals[i]} <b>{nm}</b> — {rp:+} ⭐ | Lv.{lv}\n"
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("stats"))
+async def cmd_stats(message: types.Message):
+    uid   = message.from_user.id
+    u     = get_user(uid)
+    wins, losses = u[5], u[6]
+    total = wins + losses
+    bw    = db_exec("SELECT COUNT(*) FROM bets WHERE user_id=? AND won=1", (uid,), fetch='one')
+    bl    = db_exec("SELECT COUNT(*) FROM bets WHERE user_id=? AND won=0", (uid,), fetch='one')
+    dw    = db_exec("SELECT COUNT(*) FROM duels WHERE winner_id=?", (uid,), fetch='one')
+    await message.answer(
+        f"📊 <b>Статистика</b>\n━━━━━━━━━━━━━━\n"
+        f"🎮 Всего игр: <b>{total}</b>\n"
+        f"✅ Победы: <b>{wins}</b>  ❌ Поражения: <b>{losses}</b>\n"
+        f"📈 Винрейт: <b>{round(wins/total*100 if total else 0,1)}%</b>\n"
+        f"🎰 Выиграно ставок: <b>{bw[0] if bw else 0}</b>\n"
+        f"💸 Проиграно ставок: <b>{bl[0] if bl else 0}</b>\n"
+        f"⚔️ Побед в дуэлях: <b>{dw[0] if dw else 0}</b>",
+        parse_mode="HTML"
+    )
+
+@dp.message(Command("rep"))
+async def cmd_rep(message: types.Message):
+    if not message.reply_to_message:
+        return await message.answer("⭐ Ответь на сообщение чтобы оценить репутацию!")
+    target = message.reply_to_message.from_user
+    if target.id == message.from_user.id:
+        return await message.answer("❌ Нельзя оценивать себя!")
+    if target.is_bot:
+        return await message.answer("❌ Нельзя оценивать бота!")
+
+    get_user(target.id, target.first_name)
+    row = db_exec("SELECT reputation FROM users WHERE id=?", (target.id,), fetch='one')
+    rep = row[0] if row is not None else 0
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        types.InlineKeyboardButton(text="👍 +1", callback_data=f"rep|plus|{target.id}|{message.from_user.id}"),
+        types.InlineKeyboardButton(text="👎 -1", callback_data=f"rep|minus|{target.id}|{message.from_user.id}"),
+    )
+    await message.answer(
+        f"⭐ Репутация <b>{target.first_name}</b>: <b>{rep:+}</b>\nПоставь оценку:",
+        reply_markup=builder.as_markup(), parse_mode="HTML"
+    )
+
+@dp.callback_query(F.data.startswith("rep|"))
+async def cb_rep(callback: types.CallbackQuery):
+    _, action, tid, vid = callback.data.split("|")
+    target_id = int(tid)
+    voter_id  = int(vid)
+
+    if callback.from_user.id != voter_id:
+        return await callback.answer("❌ Это не твоя кнопка!", show_alert=True)
+
+    change = 1 if action == "plus" else -1
+    db_exec("UPDATE users SET reputation=reputation+? WHERE id=?", (change, target_id))
+    row = db_exec("SELECT reputation FROM users WHERE id=?", (target_id,), fetch='one')
+    rep  = row[0] if row is not None else 0
+    name = get_username_db(target_id)
+    await callback.message.edit_text(
+        f"{'👍' if change>0 else '👎'} Репутация <b>{name}</b>: <b>{rep:+}</b>",
+        parse_mode="HTML"
+    )
+
+# ══════════════════════════════════════════════
+#       РАБОТА
+# ══════════════════════════════════════════════
+WORK_JOBS = ["программист 💻","повар 🍳","курьер 🚴","дизайнер 🎨",
+             "стример 🎮","блогер 📱","таксист 🚕","учитель 📚",
+             "врач 🏥","юрист ⚖️","строитель 🏗️","музыкант 🎵"]
+
+@dp.message(Command("work"))
+async def cmd_work(message: types.Message):
+    uid  = message.from_user.id
+    get_user(uid, message.from_user.first_name)
+    wait = check_work_cd(uid, "work")
+    if wait:
+        return await message.answer(f"💼 Уже работал! Отдохни ещё <b>{fmt_time(wait)}</b>", parse_mode="HTML")
+
+    lvl  = get_user(uid)[4]
+    base = random.randint(100, 400)
+    pay  = base + lvl * 5
+    txt  = ""
+    if has_item(uid, "vip"):
+        pay = int(pay * 1.2)
+        txt = " <i>(+20% VIP 💳)</i>"
+
+    job = random.choice(WORK_JOBS)
+    db_exec("UPDATE users SET balance=balance+?,total_earned=total_earned+? WHERE id=?", (pay, pay, uid))
+    lvl_msgs = add_exp_lvl(uid, 10)
+
+    resp = f"💼 Работал как <b>{job}</b>{txt}\n💰 +<b>{pay:,}</b>\n✨ +10 EXP\n⏱ КД: <b>1ч</b>"
+    if lvl_msgs:
+        resp += "\n" + "\n".join(lvl_msgs)
+    await message.answer(resp, parse_mode="HTML")
+
+CRIME_LIST = [
+    ("🏪 Ограбил магазин",    200, 600, 0.35),
+    ("🚗 Угнал машину",       400, 900, 0.40),
+    ("💳 Взломал банкомат",   300, 700, 0.45),
+    ("📦 Продал контрабанду", 150, 500, 0.30),
+    ("🎭 Мошенничество",      250, 650, 0.38),
+]
+
+@dp.message(Command("crime"))
+async def cmd_crime(message: types.Message):
+    uid  = message.from_user.id
+    get_user(uid, message.from_user.first_name)
+    wait = check_work_cd(uid, "crime")
+    if wait:
+        return await message.answer(f"🚔 Полиция ищет тебя! Подожди <b>{fmt_time(wait)}</b>", parse_mode="HTML")
+
+    action, mn, mx, fail = random.choice(CRIME_LIST)
+    if has_item(uid, "crime_bonus"):
+        fail = max(0.1, fail - 0.15)
+
+    if random.random() < fail:
+        fine = random.randint(50, 250)
+        bal  = get_balance(uid)
+        fine = min(fine, bal)
+        if fine > 0:
+            db_exec("UPDATE users SET balance=balance-?,total_lost=total_lost+? WHERE id=?", (fine, fine, uid))
+        await message.answer(
+            f"🚔 <b>Поймали!</b>\n{action}\n💸 Штраф: <b>-{fine:,}💰</b>\n⏱ КД: <b>30м</b>",
+            parse_mode="HTML"
+        )
+    else:
+        reward = random.randint(mn, mx)
+        db_exec("UPDATE users SET balance=balance+?,total_earned=total_earned+?,reputation=reputation-1 WHERE id=?",
+                (reward, reward, uid))
+        lvl_msgs = add_exp_lvl(uid, 15)
+        resp = f"😈 <b>Успех!</b>\n{action}\n💰 +<b>{reward:,}</b>\n⭐ Репутация: -1\n⏱ КД: <b>30м</b>"
+        if lvl_msgs:
+            resp += "\n" + "\n".join(lvl_msgs)
+        await message.answer(resp, parse_mode="HTML")
+
+@dp.message(Command("mine"))
+async def cmd_mine(message: types.Message):
+    uid  = message.from_user.id
+    get_user(uid, message.from_user.first_name)
+    wait = check_work_cd(uid, "mine")
+    if wait:
+        return await message.answer(f"⛏️ Шахта закрыта! Открытие через <b>{fmt_time(wait)}</b>", parse_mode="HTML")
+
+    resources = [
+        ("🪨 Камень",   50,  150, 50),
+        ("🪵 Дерево",   80,  200, 25),
+        ("🥇 Золото",  150,  350, 15),
+        ("💎 Алмаз",   300,  700, 7),
+        ("⚡ Кристалл",200,  500, 3),
+    ]
+    name, mn, mx, _ = random.choices(resources, weights=[r[3] for r in resources], k=1)[0]
+    mult   = 1.3 if has_item(uid, "mine_bonus") else 1.0
+    reward = int(random.randint(mn, mx) * mult)
+
+    db_exec("UPDATE users SET balance=balance+?,total_earned=total_earned+? WHERE id=?", (reward, reward, uid))
+    lvl_msgs = add_exp_lvl(uid, 20)
+    bonus_txt = "⛏️ Кирка +30%!" if mult > 1 else ""
+    resp = f"⛏️ <b>Майнинг!</b>\nНашёл: {name}\n💰 +<b>{reward:,}</b>\n{bonus_txt}\n⏱ КД: <b>2ч</b>"
+    if lvl_msgs:
+        resp += "\n" + "\n".join(lvl_msgs)
+    await message.answer(resp, parse_mode="HTML")
+
+@dp.message(Command("fish"))
+async def cmd_fish(message: types.Message):
+    uid  = message.from_user.id
+    get_user(uid, message.from_user.first_name)
+    wait = check_work_cd(uid, "fish")
+    if wait:
+        return await message.answer(f"🎣 Рыба не клюёт! Через <b>{fmt_time(wait)}</b>", parse_mode="HTML")
+
+    catches = [
+        ("🐟 Маленькая рыбка", 30,  100, 45),
+        ("🐠 Тропическая",     80,  200, 25),
+        ("🐡 Рыба-шар",        60,  150, 15),
+        ("🐙 Осьминог",       150,  350, 8),
+        ("🦞 Лобстер",        200,  500, 5),
+        ("🦈 Акула",          400,  800, 2),
+        ("👢 Ботинок",          0,    0, 10),
+    ]
+    name, mn, mx, _ = random.choices(catches, weights=[c[3] for c in catches], k=1)[0]
+    mult   = 1.25 if has_item(uid, "fish_bonus") else 1.0
+    reward = int(random.randint(mn, mx) * mult) if mx > 0 else 0
+
+    if reward > 0:
+        db_exec("UPDATE users SET balance=balance+?,total_earned=total_earned+? WHERE id=?", (reward, reward, uid))
+        lvl_msgs = add_exp_lvl(uid, 12)
+        bonus_txt = "🎣 Удочка +25%!" if mult > 1 else ""
+        resp = f"🎣 <b>Улов!</b>\nПоймал: {name}\n💰 +<b>{reward:,}</b>\n{bonus_txt}\n⏱ КД: <b>45м</b>"
+        if lvl_msgs:
+            resp += "\n" + "\n".join(lvl_msgs)
+        await message.answer(resp, parse_mode="HTML")
+    else:
+        await message.answer(f"🎣 Поймал: {name}\nНичего ценного...\n⏱ КД: <b>45м</b>", parse_mode="HTML")
+
+@dp.message(Command("hunt"))
+async def cmd_hunt(message: types.Message):
+    uid  = message.from_user.id
+    get_user(uid, message.from_user.first_name)
+    wait = check_work_cd(uid, "hunt")
+    if wait:
+        return await message.answer(f"🏹 Дичь разбежалась! Через <b>{fmt_time(wait)}</b>", parse_mode="HTML")
+
+    prey = [
+        ("🐇 Кролик",  100, 250, 40),
+        ("🦊 Лиса",    200, 400, 25),
+        ("🐗 Кабан",   300, 600, 15),
+        ("🦌 Олень",   400, 700, 10),
+        ("🐻 Медведь", 600,1000,  5),
+        ("❌ Промах",    0,   0, 15),
+    ]
+    name, mn, mx, _ = random.choices(prey, weights=[p[3] for p in prey], k=1)[0]
+    mult   = 1.35 if has_item(uid, "hunt_bonus") else 1.0
+    reward = int(random.randint(mn, mx) * mult) if mx > 0 else 0
+
+    if reward > 0:
+        db_exec("UPDATE users SET balance=balance+?,total_earned=total_earned+? WHERE id=?", (reward, reward, uid))
+        lvl_msgs = add_exp_lvl(uid, 18)
+        bonus_txt = "🔫 Пистолет +35%!" if mult > 1 else ""
+        resp = f"🏹 <b>Охота!</b>\nДобыча: {name}\n💰 +<b>{reward:,}</b>\n{bonus_txt}\n⏱ КД: <b>90м</b>"
+        if lvl_msgs:
+            resp += "\n" + "\n".join(lvl_msgs)
+        await message.answer(resp, parse_mode="HTML")
+    else:
+        await message.answer(f"🏹 {name}!\nПустой вернулся...\n⏱ КД: <b>90м</b>", parse_mode="HTML")
+
+# ══════════════════════════════════════════════
+#       МАГАЗИН
+# ══════════════════════════════════════════════
+EFFECT_NAMES = {
+    "fish_bonus":  "🎣 Удочка",
+    "mine_bonus":  "⛏️ Кирка",
+    "hunt_bonus":  "🔫 Пистолет",
+    "crime_bonus": "🎭 Маска",
+    "luck":        "🍀 Счастливый кубик",
+    "vip":         "💳 VIP карта",
+    "armor":       "🛡️ Броня",
+    "energy":      "⚡ Энергетик",
+}
+
+@dp.message(Command("shop"))
+async def cmd_shop(message: types.Message):
+    uid   = message.from_user.id
+    get_user(uid, message.from_user.first_name)
+    items = db_exec("SELECT id,name,emoji,price,description,effect FROM shop_items", fetch='all')
+    text  = "🏪 <b>Магазин</b>\n━━━━━━━━━━━━━━\n"
+    builder = InlineKeyboardBuilder()
+
+    for item_id, name, emoji, price, desc, effect in (items or []):
+        owned = has_item(uid, effect) and effect != "energy"
+        status = " ✅" if owned else ""
+        text += f"{emoji} <b>{name}</b>{status} — {price:,}💰\n<i>{desc}</i>\n\n"
+        if not owned:
+            builder.row(types.InlineKeyboardButton(
+                text=f"{emoji} {name} — {price:,}💰",
+                callback_data=f"buy|{item_id}"
+            ))
+
+    await message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("buy|"))
+async def cb_buy(callback: types.CallbackQuery):
+    item_id = int(callback.data.split("|")[1])
+    uid     = callback.from_user.id
+    get_user(uid, callback.from_user.first_name)
+
+    row = db_exec("SELECT name,emoji,price,effect FROM shop_items WHERE id=?", (item_id,), fetch='one')
+    if row is None:
+        return await callback.answer("❌ Предмет не найден", show_alert=True)
+
+    name, emoji, price, effect = row
+    bal = get_balance(uid)
+    if bal < price:
+        return await callback.answer(f"❌ Нужно {price:,}💰, у тебя {bal:,}💰", show_alert=True)
+
+    if effect == "energy":
+        # Энергетик снимает кулдаун работы
+        _key = f"{uid}_work"
+        with _work_cd_lock:
+            _work_cd.pop(_key, None)
+        db_exec("UPDATE users SET balance=balance-? WHERE id=?", (price, uid))
+        await callback.answer("⚡ Кулдаун работы сброшен!", show_alert=True)
+    else:
+        if has_item(uid, effect):
+            return await callback.answer("❌ У тебя уже есть этот предмет!", show_alert=True)
+        db_exec("UPDATE users SET balance=balance-? WHERE id=?", (price, uid))
+        add_to_inventory(uid, effect)
+        await callback.answer(f"✅ Куплено: {emoji} {name}!", show_alert=True)
+
+    # Обновляем сообщение магазина
+    items = db_exec("SELECT id,name,emoji,price,description,effect FROM shop_items", fetch='all')
+    text  = "🏪 <b>Магазин</b>\n━━━━━━━━━━━━━━\n"
+    builder = InlineKeyboardBuilder()
+    for iid, nm, em, pr, desc, eff in (items or []):
+        owned  = has_item(uid, eff) and eff != "energy"
+        status = " ✅" if owned else ""
+        text  += f"{em} <b>{nm}</b>{status} — {pr:,}💰\n<i>{desc}</i>\n\n"
+        if not owned:
+            builder.row(types.InlineKeyboardButton(
+                text=f"{em} {nm} — {pr:,}💰",
+                callback_data=f"buy|{iid}"
+            ))
+    try:
+        await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    except:
+        pass
+
+@dp.message(Command("inventory"))
+async def cmd_inventory(message: types.Message):
+    uid = message.from_user.id
+    get_user(uid, message.from_user.first_name)
+    inv = get_inventory(uid)
+
+    if not inv:
+        return await message.answer("🎒 Инвентарь пуст!\nЗайди в /shop")
+
+    text = "🎒 <b>Твой инвентарь:</b>\n━━━━━━━━━━━━━━\n"
+    for e in inv:
+        text += f"• {EFFECT_NAMES.get(e, e)}\n"
+    await message.answer(text, parse_mode="HTML")
+
+# ══════════════════════════════════════════════
+#       ПЕРЕВОД
+# ══════════════════════════════════════════════
+
+@dp.message(Command("give"))
+async def cmd_give(message: types.Message):
+    uid  = message.from_user.id
+    wait = check_cd(uid, "give")
+    if wait:
+        return await message.answer(f"⏱ Подожди <b>{wait}с</b>!", parse_mode="HTML")
+
+    # Проверяем reply
+    if not message.reply_to_message:
+        return await message.answer(
+            "❌ <b>Как переводить:</b>\n"
+            "Ответь на сообщение нужного человека командой /give 500",
+            parse_mode="HTML"
+        )
+
+    args = message.text.split()
+    if len(args) < 2:
+        return await message.answer("❌ Укажи сумму: /give 500")
+
+    try:
+        amount = int(args[1])
+    except ValueError:
+        return await message.answer("❌ Сумма должна быть числом")
+
+    if amount <= 0:
+        return await message.answer("❌ Сумма должна быть > 0")
+
+    target = message.reply_to_message.from_user
+    if target.id == uid:
+        return await message.answer("❌ Нельзя переводить себе")
+    if target.is_bot:
+        return await message.answer("❌ Нельзя переводить боту")
+
+    get_user(uid, message.from_user.first_name)
+    get_user(target.id, target.first_name)  # авторегистрация
+
+    bal = get_balance(uid)
+    if bal < amount:
+        return await message.answer(f"❌ Недостаточно! У тебя: <b>{bal:,}💰</b>", parse_mode="HTML")
+
+    db_many([
+        ("UPDATE users SET balance=balance-? WHERE id=?", (amount, uid)),
+        ("UPDATE users SET balance=balance+? WHERE id=?", (amount, target.id)),
+    ])
+    await message.answer(
+        f"✅ <b>{message.from_user.first_name}</b> → <b>{target.first_name}</b>\n"
+        f"💰 <b>{amount:,}</b>",
+        parse_mode="HTML"
+    )
+
+# ══════════════════════════════════════════════
+#       БРАК
+# ══════════════════════════════════════════════
+
+@dp.message(Command("marry"))
+async def cmd_marry(message: types.Message):
+    uid = message.from_user.id
+    get_user(uid, message.from_user.first_name)
+
+    if not message.reply_to_message:
+        return await message.answer("💍 Ответь на сообщение того, кому делаешь предложение!")
+
+    target = message.reply_to_message.from_user
+    if target.id == uid:
+        return await message.answer("❌ Нельзя жениться на себе!")
+    if target.is_bot:
+        return await message.answer("❌ Нельзя жениться на боте!")
+
+    get_user(target.id, target.first_name)
+
+    if is_married(uid):
+        return await message.answer("❌ Ты уже в отношениях! /divorce")
+    if is_married(target.id):
+        return await message.answer(f"❌ {target.first_name} уже в отношениях!")
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        types.InlineKeyboardButton(text="💍 Да!", callback_data=f"marry|yes|{target.id}|{uid}"),
+        types.InlineKeyboardButton(text="❌ Нет",  callback_data=f"marry|no|{target.id}|{uid}"),
+    )
+    await message.answer(
+        f"💍 <b>{message.from_user.first_name}</b> делает предложение <b>{target.first_name}</b>!\n\n"
+        f"<i>{target.first_name}, принимаешь?</i> 💕",
+        reply_markup=builder.as_markup(), parse_mode="HTML"
+    )
+
+@dp.callback_query(F.data.startswith("marry|"))
+async def cb_marry(callback: types.CallbackQuery):
+    _, action, tid, pid = callback.data.split("|")
+    target_id   = int(tid)
+    proposer_id = int(pid)
+
+    if callback.from_user.id != target_id:
+        return await callback.answer("❌ Это не тебе!", show_alert=True)
+
+    if action == "yes":
+        if is_married(target_id) or is_married(proposer_id):
+            return await callback.answer("❌ Кто-то уже в отношениях!", show_alert=True)
+        db_exec("INSERT INTO marriages (user1_id,user2_id) VALUES (?,?)", (proposer_id, target_id))
+        p_name = get_username_db(proposer_id)
+        t_name = get_username_db(target_id)
+        await callback.message.edit_text(
+            f"💍 <b>{p_name}</b> и <b>{t_name}</b> теперь вместе! 🎊💕",
+            parse_mode="HTML"
+        )
+    else:
+        await callback.message.edit_text(
+            f"💔 <b>{callback.from_user.first_name}</b> отказал(а)...",
+            parse_mode="HTML"
+        )
+
+@dp.message(Command("divorce"))
+async def cmd_divorce(message: types.Message):
+    uid     = message.from_user.id
+    marriage = is_married(uid)
+    if not marriage:
+        return await message.answer("❌ Ты не в отношениях!")
+    db_exec("DELETE FROM marriages WHERE id=?", (marriage[0],))
+    pid  = marriage[2] if marriage[1] == uid else marriage[1]
+    pname = get_username_db(pid)
+    await message.answer(f"💔 Ты расстался с <b>{pname}</b>...", parse_mode="HTML")
+
+@dp.message(Command("spouse"))
+async def cmd_spouse(message: types.Message):
+    uid      = message.from_user.id
+    marriage = is_married(uid)
+    if not marriage:
+        return await message.answer("💔 Ты одинок...\n/marry — найди пару!")
+    pid   = marriage[2] if marriage[1] == uid else marriage[1]
+    pname = get_username_db(pid)
+    since = marriage[3][:10] if len(marriage) > 3 else "?"
+    await message.answer(
+        f"💍 Партнёр: <b>{pname}</b>\n📅 Вместе с: <b>{since}</b>",
+        parse_mode="HTML"
+    )
+
+# ══════════════════════════════════════════════
+#       ИГРЫ
+# ══════════════════════════════════════════════
+
+@dp.message(Command("dice"))
+async def cmd_dice(message: types.Message):
+    uid  = message.from_user.id
+    wait = check_cd(uid, "dice")
+    if wait:
+        return await message.answer(f"⏱ Подожди <b>{wait}с</b>!", parse_mode="HTML")
+    get_user(uid, message.from_user.first_name)
+
+    args = message.text.split()
+    bet  = 0
+    if len(args) > 1:
+        try:
+            bet = int(args[1])
+            if bet <= 0:
+                return await message.answer("❌ Ставка > 0")
+            bal = get_balance(uid)
+            if bet > bal:
+                return await message.answer(f"❌ Недостаточно! У тебя: {bal:,}💰")
+            db_exec("UPDATE users SET balance=balance-?,total_lost=total_lost+? WHERE id=?", (bet,bet,uid))
+        except ValueError:
+            return await message.answer("❌ /dice 500")
+
+    msg   = await message.answer_dice(emoji="🎲")
+    value = msg.dice.value
+    await asyncio.sleep(3)
+
+    if bet > 0:
+        if has_item(uid, "luck"):
+            mults = {1:0, 2:0, 3:0.9, 4:1.4, 5:1.9, 6:3.0}
+        else:
+            mults = {1:0, 2:0, 3:0,   4:1.2, 5:1.5, 6:2.5}
+        mult = mults[value]
+        win  = int(bet * mult)
+        if win > 0:
+            profit = win - bet
+            db_many([
+                ("UPDATE users SET balance=balance+?,total_earned=total_earned+?,wins=wins+1 WHERE id=?", (win,win,uid)),
+                ("INSERT INTO bets (user_id,amount,game,won) VALUES(?,?,'dice',1)", (uid,bet)),
+            ])
+            result = f"✅ x{mult}! +<b>{profit:,}💰</b>" if profit > 0 else f"↩️ Почти... (<b>-{bet-win:,}💰</b>)"
+        else:
+            db_many([
+                ("UPDATE users SET losses=losses+1 WHERE id=?", (uid,)),
+                ("INSERT INTO bets (user_id,amount,game,won) VALUES(?,?,'dice',0)", (uid,bet)),
+            ])
+            result = f"❌ Проигрыш! -{bet:,}💰"
+        await message.answer(f"🎲 Выпало <b>{value}</b>\n{result}", parse_mode="HTML")
+    else:
+        db_exec("UPDATE users SET balance=balance+? WHERE id=?", (value, uid))
+        await message.answer(f"🎲 Выпало <b>{value}</b> → +{value}💰\n<i>Ставь больше: /dice 500</i>", parse_mode="HTML")
+
+    lvl_msgs = add_exp_lvl(uid, 5)
+    if lvl_msgs:
+        await message.answer("\n".join(lvl_msgs), parse_mode="HTML")
+
+@dp.message(Command("slots"))
+async def cmd_slots(message: types.Message):
+    uid  = message.from_user.id
+    wait = check_cd(uid, "slots")
+    if wait:
+        return await message.answer(f"⏱ Подожди <b>{wait}с</b>!", parse_mode="HTML")
+    get_user(uid, message.from_user.first_name)
+
+    args = message.text.split()
+    if len(args) < 2:
+        return await message.answer("🎰 /slots [ставка] | Мин: <b>50💰</b>", parse_mode="HTML")
+    try:
+        bet = int(args[1])
+    except ValueError:
+        return await message.answer("❌ /slots 500")
+
+    if bet < 50:
+        return await message.answer("❌ Минимум: <b>50💰</b>", parse_mode="HTML")
+    bal = get_balance(uid)
+    if bal < bet:
+        return await message.answer(f"❌ Недостаточно! У тебя: {bal:,}💰")
+
+    db_exec("UPDATE users SET balance=balance-?,total_lost=total_lost+? WHERE id=?", (bet,bet,uid))
+    msg  = await message.answer_dice(emoji="🎰")
+    wins_map = {1:2, 22:3, 43:6, 64:12}
+    await asyncio.sleep(3)
+
+    if msg.dice.value in wins_map:
+        mult = wins_map[msg.dice.value]
+        win  = bet * mult
+        db_many([
+            ("UPDATE users SET balance=balance+?,total_earned=total_earned+?,wins=wins+1 WHERE id=?", (win,win,uid)),
+            ("INSERT INTO bets (user_id,amount,game,won) VALUES(?,?,'slots',1)", (uid,bet)),
+        ])
+        lvl_msgs = add_exp_lvl(uid, 25)
+        resp = f"🎰 <b>ВЫИГРЫШ x{mult}!</b>\n💰 +<b>{win:,}💰</b>"
+        if lvl_msgs:
+            resp += "\n" + "\n".join(lvl_msgs)
+        await message.answer(resp, parse_mode="HTML")
+    else:
+        db_many([
+            ("UPDATE users SET losses=losses+1 WHERE id=?", (uid,)),
+            ("INSERT INTO bets (user_id,amount,game,won) VALUES(?,?,'slots',0)", (uid,bet)),
+        ])
+        add_exp_lvl(uid, 4)
+        await message.answer(f"🎰 Не повезло... -{bet:,}💰", parse_mode="HTML")
+
+@dp.message(Command("coin"))
+async def cmd_coin(message: types.Message):
+    uid  = message.from_user.id
+    wait = check_cd(uid, "coin")
+    if wait:
+        return await message.answer(f"⏱ Подожди <b>{wait}с</b>!", parse_mode="HTML")
+    get_user(uid, message.from_user.first_name)
+
+    args = message.text.split()
+    if len(args) < 3:
+        return await message.answer("🪙 /coin [ставка] орёл|решка\nВыигрыш x1.8, шанс 47%")
+    try:
+        bet = int(args[1])
+    except ValueError:
+        return await message.answer("❌ /coin 500 орёл")
+
+    if bet < 10:
+        return await message.answer("❌ Минимум: <b>10💰</b>", parse_mode="HTML")
+    bal = get_balance(uid)
+    if bal < bet:
+        return await message.answer(f"❌ Недостаточно! У тебя: {bal:,}💰")
+
+    s = args[2].lower()
+    if s in ["орёл","орел","о","h","heads"]:   side = "орёл"
+    elif s in ["решка","р","t","tails"]:         side = "решка"
+    else: return await message.answer("❌ Выбери: <b>орёл</b> или <b>решка</b>", parse_mode="HTML")
+
+    db_exec("UPDATE users SET balance=balance-?,total_lost=total_lost+? WHERE id=?", (bet,bet,uid))
+    await message.answer_dice(emoji="🏀")
+    await asyncio.sleep(3)
+
+    result  = "орёл" if random.random() < 0.47 else "решка"
+    r_emoji = "🦅 Орёл" if result == "орёл" else "🪙 Решка"
+
+    if result == side:
+        win    = int(bet * 1.8)
+        profit = win - bet
+        db_many([
+            ("UPDATE users SET balance=balance+?,total_earned=total_earned+?,wins=wins+1 WHERE id=?", (win,win,uid)),
+            ("INSERT INTO bets (user_id,amount,game,won) VALUES(?,?,'coin',1)", (uid,bet)),
+        ])
+        add_exp_lvl(uid, 12)
+        await message.answer(f"{r_emoji}\n✅ Угадал! +<b>{profit:,}💰</b>", parse_mode="HTML")
+    else:
+        db_many([
+            ("UPDATE users SET losses=losses+1 WHERE id=?", (uid,)),
+            ("INSERT INTO bets (user_id,amount,game,won) VALUES(?,?,'coin',0)", (uid,bet)),
+        ])
+        add_exp_lvl(uid, 4)
+        await message.answer(f"{r_emoji}\n❌ Не угадал! -{bet:,}💰\nСтавил на: {side}", parse_mode="HTML")
+
+@dp.message(Command("bet"))
+async def cmd_bet(message: types.Message):
+    uid  = message.from_user.id
+    wait = check_cd(uid, "bet")
+    if wait:
+        return await message.answer(f"⏱ Подожди <b>{wait}с</b>!", parse_mode="HTML")
+    get_user(uid, message.from_user.first_name)
+
+    args = message.text.split()
+    if len(args) < 2:
+        return await message.answer(
+            "🎰 <b>Рулетка</b> | /bet [сумма]\nМин: <b>10💰</b>\n\n"
+            "✅ x1.5 — 25%\n🎉 x2 — 12%\n🔥 x3 — 5%\n💎 x7 — 2%\n💥 Проигрыш — 56%",
+            parse_mode="HTML"
+        )
+    try:
+        amount = int(args[1])
+    except ValueError:
+        return await message.answer("❌ /bet 500")
+
+    if amount < 10:
+        return await message.answer("❌ Минимум: <b>10💰</b>", parse_mode="HTML")
+    bal = get_balance(uid)
+    if bal < amount:
+        return await message.answer(f"❌ Недостаточно! У тебя: {bal:,}💰")
+
+    db_exec("UPDATE users SET balance=balance-?,total_lost=total_lost+? WHERE id=?", (amount,amount,uid))
+    outcomes = [(0,"💥 Проигрыш",56),(1.5,"✅ x1.5",25),(2,"🎉 x2",12),(3,"🔥 x3",5),(7,"💎 x7",2)]
+    mult, label, _ = random.choices(outcomes, weights=[o[2] for o in outcomes], k=1)[0]
+
+    if mult > 0:
+        win    = int(amount * mult)
+        profit = win - amount
+        db_many([
+            ("UPDATE users SET balance=balance+?,total_earned=total_earned+?,wins=wins+1 WHERE id=?", (win,win,uid)),
+            ("INSERT INTO bets (user_id,amount,game,won) VALUES(?,?,'roulette',1)", (uid,amount)),
+        ])
+        add_exp_lvl(uid, int(mult*4))
+        await message.answer(f"🎰 <b>Рулетка</b>\n{label}\nСтавка: {amount:,} → +<b>{profit:,}💰</b>", parse_mode="HTML")
+    else:
+        db_many([
+            ("UPDATE users SET losses=losses+1 WHERE id=?", (uid,)),
+            ("INSERT INTO bets (user_id,amount,game,won) VALUES(?,?,'roulette',0)", (uid,amount)),
+        ])
+        add_exp_lvl(uid, 2)
+        await message.answer(f"🎰 <b>Рулетка</b>\n💥 Проигрыш! -{amount:,}💰", parse_mode="HTML")
+
+# ══════════════════════════════════════════════
+#       БЛЭКДЖЕК
+# ══════════════════════════════════════════════
+def bj_card(): return random.choice(['2','3','4','5','6','7','8','9','10','J','Q','K','A'])
+
+def bj_value(hand):
+    val  = sum(10 if c in 'JQK' else 11 if c=='A' else int(c) for c in hand)
+    aces = hand.count('A')
+    while val > 21 and aces:
+        val -= 10; aces -= 1
+    return val
+
+bj_games = {}
+bj_lock  = Lock()
+
+@dp.message(Command("blackjack"))
+async def cmd_blackjack(message: types.Message):
+    uid  = message.from_user.id
+    wait = check_cd(uid, "bet")
+    if wait:
+        return await message.answer(f"⏱ Подожди <b>{wait}с</b>!", parse_mode="HTML")
+    get_user(uid, message.from_user.first_name)
+
+    args = message.text.split()
+    if len(args) < 2:
+        return await message.answer("🃏 /blackjack [ставка] | Мин: <b>50💰</b>", parse_mode="HTML")
+    try:
+        bet = int(args[1])
+    except ValueError:
+        return await message.answer("❌ /blackjack 500")
+
+    if bet < 50:
+        return await message.answer("❌ Минимум: <b>50💰</b>", parse_mode="HTML")
+    bal = get_balance(uid)
+    if bal < bet:
+        return await message.answer(f"❌ Недостаточно! У тебя: {bal:,}💰")
+
+    db_exec("UPDATE users SET balance=balance-?,total_lost=total_lost+? WHERE id=?", (bet,bet,uid))
+    player = [bj_card(), bj_card()]
+    dealer = [bj_card(), bj_card()]
+    with bj_lock:
+        bj_games[uid] = {"player": player, "dealer": dealer, "bet": bet}
+
+    pval = bj_value(player)
+    if pval == 21:
+        win = int(bet * 2.5)
+        db_exec("UPDATE users SET balance=balance+?,total_earned=total_earned+?,wins=wins+1 WHERE id=?", (win,win,uid))
+        add_exp_lvl(uid, 30)
+        with bj_lock: bj_games.pop(uid, None)
+        return await message.answer(
+            f"🃏 <b>БЛЭКДЖЕК!</b>\nКарты: {' '.join(player)} = <b>21</b>\n💰 +<b>{win-bet:,}💰</b> (x2.5)",
+            parse_mode="HTML"
+        )
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        types.InlineKeyboardButton(text="🃏 Ещё карту", callback_data=f"bj|hit|{uid}"),
+        types.InlineKeyboardButton(text="✋ Хватит",    callback_data=f"bj|stand|{uid}"),
+    )
+    await message.answer(
+        f"🃏 <b>Блэкджек</b> | Ставка: {bet:,}💰\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"Твои карты: {' '.join(player)} = <b>{pval}</b>\n"
+        f"Дилер: {dealer[0]} | ?",
+        reply_markup=builder.as_markup(), parse_mode="HTML"
+    )
+
+@dp.callback_query(F.data.startswith("bj|"))
+async def cb_blackjack(callback: types.CallbackQuery):
+    _, action, uid_s = callback.data.split("|")
+    uid = int(uid_s)
+
+    if callback.from_user.id != uid:
+        return await callback.answer("❌ Это не твоя игра!", show_alert=True)
+
+    with bj_lock:
+        game = bj_games.get(uid)
+    if not game:
+        return await callback.answer("❌ Игра устарела, начни заново", show_alert=True)
+
+    player, dealer, bet = game["player"], game["dealer"], game["bet"]
+
+    if action == "hit":
+        player.append(bj_card())
+        pval = bj_value(player)
+        with bj_lock:
+            bj_games[uid]["player"] = player
+
+        if pval > 21:
+            with bj_lock: bj_games.pop(uid, None)
+            db_exec("UPDATE users SET losses=losses+1 WHERE id=?", (uid,))
+            return await callback.message.edit_text(
+                f"🃏 <b>Перебор!</b>\nКарты: {' '.join(player)} = <b>{pval}</b>\n💸 -{bet:,}💰",
+                parse_mode="HTML"
+            )
+        if pval == 21:
+            action = "stand"
+        else:
+            builder = InlineKeyboardBuilder()
+            builder.row(
+                types.InlineKeyboardButton(text="🃏 Ещё карту", callback_data=f"bj|hit|{uid}"),
+                types.InlineKeyboardButton(text="✋ Хватит",    callback_data=f"bj|stand|{uid}"),
+            )
+            return await callback.message.edit_text(
+                f"🃏 <b>Блэкджек</b> | Ставка: {bet:,}💰\n"
+                f"━━━━━━━━━━━━━━\n"
+                f"Твои карты: {' '.join(player)} = <b>{pval}</b>\n"
+                f"Дилер: {dealer[0]} | ?",
+                reply_markup=builder.as_markup(), parse_mode="HTML"
+            )
+
+    # stand
+    pval = bj_value(player)
+    while bj_value(dealer) < 17:
+        dealer.append(bj_card())
+    dval = bj_value(dealer)
+    with bj_lock: bj_games.pop(uid, None)
+
+    if dval > 21 or pval > dval:
+        win = bet * 2
+        db_exec("UPDATE users SET balance=balance+?,total_earned=total_earned+?,wins=wins+1 WHERE id=?", (win,win,uid))
+        add_exp_lvl(uid, 20)
+        result = f"🏆 Победа! +<b>{bet:,}💰</b>"
+    elif pval == dval:
+        db_exec("UPDATE users SET balance=balance+? WHERE id=?", (bet, uid))
+        result = "🤝 Ничья! Ставка возвращена."
+    else:
+        db_exec("UPDATE users SET losses=losses+1 WHERE id=?", (uid,))
+        add_exp_lvl(uid, 5)
+        result = f"❌ Дилер победил! -{bet:,}💰"
+
+    await callback.message.edit_text(
+        f"🃏 <b>Итог</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"Ты: {' '.join(player)} = <b>{pval}</b>\n"
+        f"Дилер: {' '.join(dealer)} = <b>{dval}</b>\n"
+        f"━━━━━━━━━━━━━━\n{result}",
+        parse_mode="HTML"
+    )
+
+# ══════════════════════════════════════════════
+#       ДУЭЛИ
+# ══════════════════════════════════════════════
+
+@dp.message(Command("duel"))
+async def cmd_duel(message: types.Message):
+    uid  = message.from_user.id
+    wait = check_cd(uid, "duel")
+    if wait:
+        return await message.answer(f"⏱ Подожди <b>{wait}с</b>!", parse_mode="HTML")
+
+    if not message.reply_to_message:
+        return await message.answer("⚔️ Ответь на сообщение противника!\nПример: /duel 500")
+
+    opp = message.reply_to_message.from_user
+    if opp.id == uid:        return await message.answer("❌ Нельзя вызвать себя!")
+    if opp.is_bot:           return await message.answer("❌ Нельзя вызвать бота!")
+
+    get_user(uid, message.from_user.first_name)
+    get_user(opp.id, opp.first_name)
+
+    args = message.text.split()
+    bet  = 0
+    if len(args) > 1:
+        try:    bet = max(0, int(args[1]))
+        except: bet = 0
+
+    if bet > 0 and get_balance(uid) < bet:
+        return await message.answer(f"❌ Недостаточно! У тебя: {get_balance(uid):,}💰")
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        types.InlineKeyboardButton(text="✅ Принять",  callback_data=f"da|{opp.id}|{uid}|{bet}"),
+        types.InlineKeyboardButton(text="❌ Отказать", callback_data=f"dd|{opp.id}|{uid}"),
+    )
+    bet_text = f"💰 Ставка: <b>{bet:,}</b>" if bet > 0 else "💰 Без ставки"
+    await message.answer(
+        f"⚔️ <b>{message.from_user.first_name}</b> вызывает <b>{opp.first_name}</b>!\n"
+        f"{bet_text}\n\n<i>{opp.first_name}, принимаешь?</i>",
+        reply_markup=builder.as_markup(), parse_mode="HTML"
+    )
+
+@dp.callback_query(F.data.startswith("da|"))
+async def accept_duel(callback: types.CallbackQuery):
+    try:
+        _, opp_s, chal_s, bet_s = callback.data.split("|")
+        opp_id  = int(opp_s)
+        chal_id = int(chal_s)
+        bet     = int(bet_s)
+    except:
+        return await callback.answer("❌ Ошибка данных", show_alert=True)
+
+    if callback.from_user.id != opp_id:
+        return await callback.answer("❌ Это не твой вызов!", show_alert=True)
+
+    if bet > 0:
+        if get_balance(opp_id)  < bet: return await callback.answer(f"❌ Тебе не хватает {bet:,}💰!", show_alert=True)
+        if get_balance(chal_id) < bet: return await callback.answer("❌ Вызывающему не хватает денег!", show_alert=True)
+        db_many([
+            ("UPDATE users SET balance=balance-? WHERE id=?", (bet, chal_id)),
+            ("UPDATE users SET balance=balance-? WHERE id=?", (bet, opp_id)),
+        ])
+
+    await callback.message.edit_reply_markup(reply_markup=None)
+    chal_name = get_username_db(chal_id)
+    opp_name  = get_username_db(opp_id)
+
+    await callback.message.answer(
+        f"⚔️ <b>ДУЭЛЬ!</b>\n<b>{chal_name}</b> VS <b>{opp_name}</b>\n🎲 Бросают кубики...",
+        parse_mode="HTML"
+    )
+    await asyncio.sleep(1)
+
+    m1   = await callback.message.answer_dice(emoji="🎲")
+    val1 = m1.dice.value
+    await asyncio.sleep(1)
+    m2   = await callback.message.answer_dice(emoji="🎲")
+    val2 = m2.dice.value
+    await asyncio.sleep(3)
+
+    # Броня +1
+    v1 = min(val1 + (1 if has_item(chal_id, "armor") else 0), 6)
+    v2 = min(val2 + (1 if has_item(opp_id,  "armor") else 0), 6)
+
+    if v1 == v2:
+        winner_id = random.choice([chal_id, opp_id])
+        draw_txt  = "🎲 Ничья — решает жребий!\n"
+    elif v1 > v2:
+        winner_id = chal_id; draw_txt = ""
+    else:
+        winner_id = opp_id;  draw_txt = ""
+
+    loser_id    = opp_id if winner_id == chal_id else chal_id
+    winner_name = chal_name if winner_id == chal_id else opp_name
+    prize       = bet * 2 if bet > 0 else 100
+
+    db_many([
+        ("UPDATE users SET balance=balance+?,total_earned=total_earned+?,wins=wins+1 WHERE id=?", (prize,prize,winner_id)),
+        ("UPDATE users SET losses=losses+1 WHERE id=?", (loser_id,)),
+        ("INSERT INTO duels (challenger_id,opponent_id,bet,winner_id,chal_roll,opp_roll) VALUES(?,?,?,?,?,?)",
+         (chal_id, opp_id, bet, winner_id, v1, v2)),
+    ])
+    add_exp_lvl(winner_id, 40)
+    add_exp_lvl(loser_id,  8)
+
+    prize_txt = f"💰 Приз: <b>{prize:,}</b>" if bet > 0 else "🏅 Победа!"
+    await callback.message.answer(
+        f"{draw_txt}"
+        f"🎲 <b>{chal_name}</b>: {v1}  VS  <b>{opp_name}</b>: {v2}\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"🏆 Победитель: <b>{winner_name}</b>!\n"
+        f"{prize_txt}\n"
+        f"✨ +40 EXP победителю | +8 EXP проигравшему",
+        parse_mode="HTML"
+    )
+
+@dp.callback_query(F.data.startswith("dd|"))
+async def decline_duel(callback: types.CallbackQuery):
+    try:
+        _, opp_s, _ = callback.data.split("|")
+        opp_id = int(opp_s)
+    except:
+        return await callback.answer("❌ Ошибка", show_alert=True)
+
+    if callback.from_user.id != opp_id:
+        return await callback.answer("❌ Это не твой вызов!", show_alert=True)
+
+    await callback.message.edit_text("❌ <b>Дуэль отклонена!</b>", parse_mode="HTML")
+
+# ══════════════════════════════════════════════
+#       РП ДЕЙСТВИЯ
+# ══════════════════════════════════════════════
+
+async def handle_rp(message: types.Message, action_key: str):
+    uid  = message.from_user.id
+    wait = check_cd(uid, "rp")
+    if wait:
+        return await message.answer(f"⏱ Подожди <b>{wait}с</b>!", parse_mode="HTML")
+
+    if not message.reply_to_message:
+        a = RP_ACTIONS[action_key]
+        return await message.answer(f"{a['emoji']} Ответь на сообщение нужного человека!")
+
+    target = message.reply_to_message.from_user
+    if target.id == uid:
+        return await message.answer("😅 Ты пытаешься сделать это с собой?")
+
+    tmpl = random.choice(RP_ACTIONS[action_key]["texts"])
+    fn   = f'<a href="tg://user?id={uid}">{message.from_user.first_name}</a>'
+    tn   = f'<a href="tg://user?id={target.id}">{target.first_name}</a>'
+    await message.answer(tmpl.replace("{f}", fn).replace("{t}", tn), parse_mode="HTML")
+
+for _a in list(RP_ACTIONS.keys()) + list(RP_ALIASES.keys()):
+    def _make(key):
+        resolved = RP_ALIASES.get(key, key)
+        async def _h(message: types.Message):
+            await handle_rp(message, resolved)
+        return _h
+    dp.message.register(_make(_a), Command(_a))
+
+# ══════════════════════════════════════════════
+#              АДМИНКА
+# ══════════════════════════════════════════════
+
+def is_admin(message: types.Message) -> bool:
+    uname = (message.from_user.username or "").lower()
+    return uname in {a.lower() for a in ADMINS}
+
+def admin_only(func):
+    """Декоратор — только для админов"""
+    async def wrapper(message: types.Message, *args, **kwargs):
+        if not is_admin(message):
+            return await message.answer("❌ У тебя нет прав администратора!")
+        return await func(message, *args, **kwargs)
+    return wrapper
+
+@dp.message(Command("admin"))
+async def cmd_admin_panel(message: types.Message):
+    if not is_admin(message):
+        return await message.answer("❌ У тебя нет прав!")
+
+    await message.answer(
+        "🔧 <b>Панель администратора</b>\n"
+        "━━━━━━━━━━━━━━\n\n"
+        "💰 <b>Баланс</b>\n"
+        "/give_admin @юзер [сумма] — выдать деньги\n"
+        "/take_admin @юзер [сумма] — забрать деньги\n"
+        "/set_balance @юзер [сумма] — установить баланс\n\n"
+        "⭐ <b>Уровень / EXP</b>\n"
+        "/set_lvl @юзер [уровень] — установить уровень\n"
+        "/add_exp @юзер [кол-во] — добавить EXP\n\n"
+        "🎒 <b>Инвентарь</b>\n"
+        "/give_item @юзер [эффект] — выдать предмет\n"
+        "/take_item @юзер [эффект] — забрать предмет\n\n"
+        "🔨 <b>Модерация</b>\n"
+        "/ban_user @юзер — обнулить баланс и сбросить\n"
+        "/reset_user @юзер — полный сброс игрока\n"
+        "/warn @юзер [причина] — предупреждение\n\n"
+        "📊 <b>Информация</b>\n"
+        "/user_info @юзер — подробная инфа о юзере\n"
+        "/server_stats — статистика сервера\n"
+        "/broadcast [текст] — рассылка всем игрокам\n\n"
+        "🏪 <b>Экономика</b>\n"
+        "/add_shop [name] [emoji] [цена] [описание] [эффект]\n"
+        "/reset_cooldown @юзер — сбросить все кулдауны\n",
+        parse_mode="HTML"
+    )
+
+# ── Вспомогательная: найти юзера из аргументов или reply ──
+def resolve_target(message: types.Message, args: list):
+    """
+    Возвращает (user_id, username, error_text)
+    Ищет через reply или через @username в аргументах
+    """
+    if message.reply_to_message:
+        t = message.reply_to_message.from_user
+        return t.id, t.first_name, None
+
+    # Ищем @username в аргументах
+    for arg in args[1:]:
+        if arg.startswith("@"):
+            uname = arg[1:]
+            row = db_exec("SELECT id, username FROM users WHERE LOWER(username)=LOWER(?)",
+                          (uname,), fetch='one')
+            if row:
+                return row[0], row[1], None
+            return None, None, f"❌ Пользователь @{uname} не найден в БД"
+
+    return None, None, "❌ Укажи @юзера или ответь на его сообщение"
+
+def parse_amount(args: list) -> tuple:
+    """Ищет число в аргументах, возвращает (число, ошибка)"""
+    for arg in args:
+        try:
+            val = int(arg)
+            return val, None
+        except ValueError:
+            continue
+    return None, "❌ Укажи числовое значение"
+
+# ─── give_admin ───
+@dp.message(Command("give_admin"))
+async def cmd_give_admin(message: types.Message):
+    if not is_admin(message): return await message.answer("❌ Нет прав!")
+    args = message.text.split()
+    tid, tname, err = resolve_target(message, args)
+    if err: return await message.answer(err)
+    amount, err = parse_amount(args[1:])
+    if err: return await message.answer(err)
+    if amount <= 0: return await message.answer("❌ Сумма > 0")
+
+    get_user(tid)
+    db_exec("UPDATE users SET balance=balance+? WHERE id=?", (amount, tid))
+    await message.answer(
+        f"✅ Выдано <b>{amount:,}💰</b> → <b>{tname}</b>\n"
+        f"💰 Новый баланс: <b>{get_balance(tid):,}</b>",
+        parse_mode="HTML"
+    )
+
+# ─── take_admin ───
+@dp.message(Command("take_admin"))
+async def cmd_take_admin(message: types.Message):
+    if not is_admin(message): return await message.answer("❌ Нет прав!")
+    args = message.text.split()
+    tid, tname, err = resolve_target(message, args)
+    if err: return await message.answer(err)
+    amount, err = parse_amount(args[1:])
+    if err: return await message.answer(err)
+    if amount <= 0: return await message.answer("❌ Сумма > 0")
+
+    get_user(tid)
+    bal = get_balance(tid)
+    take = min(amount, bal)
+    db_exec("UPDATE users SET balance=balance-? WHERE id=?", (take, tid))
+    await message.answer(
+        f"✅ Забрано <b>{take:,}💰</b> у <b>{tname}</b>\n"
+        f"💰 Новый баланс: <b>{get_balance(tid):,}</b>",
+        parse_mode="HTML"
+    )
+
+# ─── set_balance ───
+@dp.message(Command("set_balance"))
+async def cmd_set_balance(message: types.Message):
+    if not is_admin(message): return await message.answer("❌ Нет прав!")
+    args = message.text.split()
+    tid, tname, err = resolve_target(message, args)
+    if err: return await message.answer(err)
+    amount, err = parse_amount(args[1:])
+    if err: return await message.answer(err)
+    if amount < 0: return await message.answer("❌ Баланс не может быть отрицательным")
+
+    get_user(tid)
+    db_exec("UPDATE users SET balance=? WHERE id=?", (amount, tid))
+    await message.answer(
+        f"✅ Баланс <b>{tname}</b> установлен: <b>{amount:,}💰</b>",
+        parse_mode="HTML"
+    )
+
+# ─── set_lvl ───
+@dp.message(Command("set_lvl"))
+async def cmd_set_lvl(message: types.Message):
+    if not is_admin(message): return await message.answer("❌ Нет прав!")
+    args = message.text.split()
+    tid, tname, err = resolve_target(message, args)
+    if err: return await message.answer(err)
+    lvl, err = parse_amount(args[1:])
+    if err: return await message.answer(err)
+    if not (1 <= lvl <= 100): return await message.answer("❌ Уровень от 1 до 100")
+
+    get_user(tid)
+    db_exec("UPDATE users SET lvl=?, exp=0 WHERE id=?", (lvl, tid))
+    await message.answer(
+        f"✅ Уровень <b>{tname}</b> → <b>{lvl}</b>",
+        parse_mode="HTML"
+    )
+
+# ─── add_exp ───
+@dp.message(Command("add_exp"))
+async def cmd_add_exp(message: types.Message):
+    if not is_admin(message): return await message.answer("❌ Нет прав!")
+    args = message.text.split()
+    tid, tname, err = resolve_target(message, args)
+    if err: return await message.answer(err)
+    amount, err = parse_amount(args[1:])
+    if err: return await message.answer(err)
+
+    get_user(tid)
+    lvl_msgs = add_exp_lvl(tid, amount)
+    u = get_user(tid)
+    text = f"✅ +<b>{amount}</b> EXP → <b>{tname}</b>\nУровень: <b>{u[4]}</b> | EXP: <b>{u[3]}</b>"
+    if lvl_msgs:
+        text += "\n" + "\n".join(lvl_msgs)
+    await message.answer(text, parse_mode="HTML")
+
+# ─── give_item ───
+VALID_EFFECTS = {"fish_bonus","mine_bonus","hunt_bonus","crime_bonus","luck","vip","armor"}
+
+@dp.message(Command("give_item"))
+async def cmd_give_item(message: types.Message):
+    if not is_admin(message): return await message.answer("❌ Нет прав!")
+    args = message.text.split()
+    tid, tname, err = resolve_target(message, args)
+    if err: return await message.answer(err)
+
+    effect = None
+    for arg in args[1:]:
+        if arg in VALID_EFFECTS:
+            effect = arg
+            break
+
+    if not effect:
+        return await message.answer(
+            f"❌ Укажи эффект предмета:\n<code>{', '.join(VALID_EFFECTS)}</code>",
+            parse_mode="HTML"
+        )
+
+    get_user(tid)
+    add_to_inventory(tid, effect)
+    name = EFFECT_NAMES.get(effect, effect)
+    await message.answer(f"✅ Выдан предмет <b>{name}</b> → <b>{tname}</b>", parse_mode="HTML")
+
+# ─── take_item ───
+@dp.message(Command("take_item"))
+async def cmd_take_item(message: types.Message):
+    if not is_admin(message): return await message.answer("❌ Нет прав!")
+    args = message.text.split()
+    tid, tname, err = resolve_target(message, args)
+    if err: return await message.answer(err)
+
+    effect = None
+    for arg in args[1:]:
+        if arg in VALID_EFFECTS:
+            effect = arg
+            break
+
+    if not effect:
+        return await message.answer(
+            f"❌ Укажи эффект предмета:\n<code>{', '.join(VALID_EFFECTS)}</code>",
+            parse_mode="HTML"
+        )
+
+    get_user(tid)
+    if not has_item(tid, effect):
+        return await message.answer(f"❌ У <b>{tname}</b> нет этого предмета", parse_mode="HTML")
+
+    remove_from_inventory(tid, effect)
+    name = EFFECT_NAMES.get(effect, effect)
+    await message.answer(f"✅ Забран предмет <b>{name}</b> у <b>{tname}</b>", parse_mode="HTML")
+
+# ─── ban_user ───
+@dp.message(Command("ban_user"))
+async def cmd_ban_user(message: types.Message):
+    if not is_admin(message): return await message.answer("❌ Нет прав!")
+    args = message.text.split()
+    tid, tname, err = resolve_target(message, args)
+    if err: return await message.answer(err)
+    if not tid: return await message.answer("❌ Юзер не найден")
+
+    # Обнуляем всё кроме записи
+    db_exec(
+        "UPDATE users SET balance=0, exp=0, lvl=1, wins=0, losses=0, "
+        "total_earned=0, total_lost=0, reputation=0, inventory='' WHERE id=?",
+        (tid,)
+    )
+    await message.answer(
+        f"🔨 <b>{tname}</b> забанен!\n"
+        f"Баланс, уровень, инвентарь — всё обнулено.",
+        parse_mode="HTML"
+    )
+
+# ─── reset_user ───
+@dp.message(Command("reset_user"))
+async def cmd_reset_user(message: types.Message):
+    if not is_admin(message): return await message.answer("❌ Нет прав!")
+    args = message.text.split()
+    tid, tname, err = resolve_target(message, args)
+    if err: return await message.answer(err)
+
+    db_exec(
+        "UPDATE users SET balance=1000, exp=0, lvl=1, wins=0, losses=0, "
+        "total_earned=0, total_lost=0, reputation=0, inventory='', last_daily='' WHERE id=?",
+        (tid,)
+    )
+    await message.answer(f"🔄 Игрок <b>{tname}</b> сброшен до начального состояния.", parse_mode="HTML")
+
+# ─── warn ───
+@dp.message(Command("warn"))
+async def cmd_warn(message: types.Message):
+    if not is_admin(message): return await message.answer("❌ Нет прав!")
+    args = message.text.split()
+    tid, tname, err = resolve_target(message, args)
+    if err: return await message.answer(err)
+
+    reason_parts = [a for a in args[1:] if not a.startswith("@")]
+    reason = " ".join(reason_parts) if reason_parts else "Без причины"
+
+    # Штраф 500 монет за варн
+    bal  = get_balance(tid)
+    fine = min(500, bal)
+    if fine > 0:
+        db_exec("UPDATE users SET balance=balance-? WHERE id=?", (fine, tid))
+
+    await message.answer(
+        f"⚠️ <b>Предупреждение!</b>\n"
+        f"👤 Игрок: <b>{tname}</b>\n"
+        f"📝 Причина: {reason}\n"
+        f"💸 Штраф: <b>-{fine:,}💰</b>",
+        parse_mode="HTML"
+    )
+    try:
+        await bot.send_message(
+            tid,
+            f"⚠️ Тебе выдано предупреждение!\n"
+            f"📝 Причина: <b>{reason}</b>\n"
+            f"💸 Штраф: <b>-{fine:,}💰</b>",
+            parse_mode="HTML"
+        )
+    except:
+        pass
+
+# ─── user_info ───
+@dp.message(Command("user_info"))
+async def cmd_user_info(message: types.Message):
+    if not is_admin(message): return await message.answer("❌ Нет прав!")
+    args = message.text.split()
+    tid, tname, err = resolve_target(message, args)
+    if err: return await message.answer(err)
+
+    u = get_user(tid)
+    if u is None:
+        return await message.answer("❌ Пользователь не найден в БД")
+
+    bal, exp, lvl   = u[2], u[3], u[4]
+    wins, losses    = u[5], u[6]
+    earned, lost    = u[7], u[8]
+    last_daily      = u[9] or "никогда"
+    rep             = u[10] if len(u) > 10 else 0
+    inv             = get_inventory(tid)
+    inv_text        = ", ".join([EFFECT_NAMES.get(e,e) for e in inv]) or "пусто"
+    reg_at          = u[12] if len(u) > 12 else "?"
+
+    marry = is_married(tid)
+    marry_text = "нет"
+    if marry:
+        pid = marry[2] if marry[1] == tid else marry[1]
+        marry_text = get_username_db(pid)
+
+    duel_wins = db_exec("SELECT COUNT(*) FROM duels WHERE winner_id=?", (tid,), fetch='one')
+    total_bets = db_exec("SELECT COUNT(*) FROM bets WHERE user_id=?", (tid,), fetch='one')
+
+    await message.answer(
+        f"🔍 <b>Инфо об игроке</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"👤 Имя: <b>{tname}</b>\n"
+        f"🆔 ID: <code>{tid}</code>\n"
+        f"📅 Регистрация: <b>{reg_at[:10] if reg_at != '?' else '?'}</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"💰 Баланс: <b>{bal:,}</b>\n"
+        f"🆙 Уровень: <b>{lvl}</b> | EXP: <b>{exp}</b>\n"
+        f"⭐ Репутация: <b>{rep:+}</b>\n"
+        f"💍 Партнёр: <b>{marry_text}</b>\n"
+        f"🎒 Инвентарь: {inv_text}\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"⚔️ Побед: <b>{wins}</b> | Поражений: <b>{losses}</b>\n"
+        f"🎯 Побед в дуэлях: <b>{duel_wins[0] if duel_wins else 0}</b>\n"
+        f"🎰 Всего ставок: <b>{total_bets[0] if total_bets else 0}</b>\n"
+        f"💵 Заработано: <b>{earned:,}</b>\n"
+        f"💸 Потрачено: <b>{lost:,}</b>\n"
+        f"📅 Последний дейли: <b>{last_daily}</b>",
+        parse_mode="HTML"
+    )
+
+# ─── server_stats ───
+@dp.message(Command("server_stats"))
+async def cmd_server_stats(message: types.Message):
+    if not is_admin(message): return await message.answer("❌ Нет прав!")
+
+    total_users  = db_exec("SELECT COUNT(*) FROM users", fetch='one')
+    total_money  = db_exec("SELECT SUM(balance) FROM users", fetch='one')
+    total_bets   = db_exec("SELECT COUNT(*) FROM bets", fetch='one')
+    total_duels  = db_exec("SELECT COUNT(*) FROM duels", fetch='one')
+    total_marry  = db_exec("SELECT COUNT(*) FROM marriages", fetch='one')
+    richest      = db_exec("SELECT username,balance FROM users ORDER BY balance DESC LIMIT 1", fetch='one')
+    highest_lvl  = db_exec("SELECT username,lvl FROM users ORDER BY lvl DESC LIMIT 1", fetch='one')
+    daily_today  = db_exec("SELECT COUNT(*) FROM users WHERE last_daily=?", (str(date.today()),), fetch='one')
+
+    await message.answer(
+        f"📊 <b>Статистика сервера</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"👥 Игроков: <b>{total_users[0] if total_users else 0}</b>\n"
+        f"💰 Всего денег в игре: <b>{(total_money[0] or 0):,}</b>\n"
+        f"🎰 Всего ставок: <b>{total_bets[0] if total_bets else 0}</b>\n"
+        f"⚔️ Всего дуэлей: <b>{total_duels[0] if total_duels else 0}</b>\n"
+        f"💍 Пар: <b>{total_marry[0] if total_marry else 0}</b>\n"
+        f"🎁 Дейли сегодня: <b>{daily_today[0] if daily_today else 0}</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"🤑 Богатейший: <b>{richest[0] if richest else '?'}</b> — {(richest[1] if richest else 0):,}💰\n"
+        f"👑 Высший уровень: <b>{highest_lvl[0] if highest_lvl else '?'}</b> — Lv.{highest_lvl[1] if highest_lvl else 0}",
+        parse_mode="HTML"
+    )
+
+# ─── broadcast ───
+@dp.message(Command("broadcast"))
+async def cmd_broadcast(message: types.Message):
+    if not is_admin(message): return await message.answer("❌ Нет прав!")
+
+    args  = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        return await message.answer("❌ Укажи текст: /broadcast Привет всем!")
+
+    text  = args[1]
+    users = db_exec("SELECT id FROM users", fetch='all')
+    if not users:
+        return await message.answer("❌ Нет пользователей")
+
+    sent = 0
+    fail = 0
+    for (uid,) in users:
+        try:
+            await bot.send_message(uid, f"📢 <b>Объявление:</b>\n\n{text}", parse_mode="HTML")
+            sent += 1
+            await asyncio.sleep(0.05)  # защита от флуда
+        except:
+            fail += 1
+
+    await message.answer(
+        f"📢 <b>Рассылка завершена</b>\n"
+        f"✅ Отправлено: <b>{sent}</b>\n"
+        f"❌ Ошибок: <b>{fail}</b>",
+        parse_mode="HTML"
+    )
+
+# ─── reset_cooldown ───
+@dp.message(Command("reset_cooldown"))
+async def cmd_reset_cd(message: types.Message):
+    if not is_admin(message): return await message.answer("❌ Нет прав!")
+    args = message.text.split()
+    tid, tname, err = resolve_target(message, args)
+    if err: return await message.answer(err)
+
+    with _work_cd_lock:
+        for cmd in WORK_CD:
+            _work_cd.pop(f"{tid}_{cmd}", None)
+    with _cd_lock:
+        _cd_store.pop(tid, None)
+
+    await message.answer(f"✅ Все кулдауны <b>{tname}</b> сброшены!", parse_mode="HTML")
+
+# ─── add_shop ───
+@dp.message(Command("add_shop"))
+async def cmd_add_shop(message: types.Message):
+    if not is_admin(message): return await message.answer("❌ Нет прав!")
+    # /add_shop Название 🎁 500 Описание предмета effect_name
+    args = message.text.split()
+    if len(args) < 6:
+        return await message.answer(
+            "❌ Использование:\n"
+            "<code>/add_shop Название 🎁 500 Описание эффект</code>\n\n"
+            "Пример:\n"
+            "<code>/add_shop Зелье 🧪 300 Восстанавливает здоровье heal</code>",
+            parse_mode="HTML"
+        )
+
+    name   = args[1]
+    emoji  = args[2]
+    try:
+        price = int(args[3])
+    except ValueError:
+        return await message.answer("❌ Цена должна быть числом")
+
+    desc   = " ".join(args[4:-1])
+    effect = args[-1]
+
+    db_exec(
+        "INSERT INTO shop_items (name,emoji,price,description,effect) VALUES (?,?,?,?,?)",
+        (name, emoji, price, desc, effect)
+    )
+    await message.answer(
+        f"✅ Предмет добавлен в магазин!\n"
+        f"{emoji} <b>{name}</b> — {price:,}💰\n"
+        f"<i>{desc}</i>\nЭффект: <code>{effect}</code>",
+        parse_mode="HTML"
+    )
+
+# ══════════════════════════════════════════════
+#              ЗАПУСК
+# ══════════════════════════════════════════════
+
+async def main():
+    keep_alive()
+    logging.info("Bot started!")
+    await dp.start_polling(bot, skip_updates=True)
+
+if __name__ == "__main__":
+    asyncio.run(main())
