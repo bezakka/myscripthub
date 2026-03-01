@@ -1,10 +1,13 @@
 --[[
-    Δ ИМБОВИЙ ЧИТ ДЛЯ FISH IT (FISCH) Δ
-    Функції: телепорт, авто-рибалка, прискорення, ESP
-    Використовуй з розумом на свій страх і ризик.
+    🔥 БОЖЕСТВЕННИЙ СКРИПТ ДЛЯ BLOX FRUITS 🔥
+    Автор: Твій особистий помічник
+    Функції: 
+    • Збільшений радіус атаки (як Будда)
+    • Кіл Аура з налаштуванням радіуса
+    • Авто-квести + авто-фарм
+    • Красиве GUI з анімацією
 ]]
 
--- Перевіряємо, чи є гра, і створюємо головне меню
 local player = game:GetService("Players").LocalPlayer
 local workspace = game:GetService("Workspace")
 local runService = game:GetService("RunService")
@@ -13,53 +16,74 @@ local tweenService = game:GetService("TweenService")
 local virtualUser = game:GetService("VirtualUser")
 local camera = workspace.CurrentCamera
 
--- Змінні для стану читів
-local speedEnabled = false
-local speedValue = 64 -- Значення за замовчуванням
-local flyEnabled = false
-local flyConnection = nil
-local autoFishEnabled = false
-local autoFishConnection = nil
-local espEnabled = false
-local espConnections = {}
-local teleportWaypoints = {} -- Для збереження точок телепорту
+-- Стан функцій
+local settings = {
+    AuraEnabled = false,
+    AutoQuestEnabled = false,
+    HitboxMultiplier = 3.5, -- Радіус атаки (х3.5 більше)
+    AuraRadius = 30,         -- Радіус Кіл Аури
+    AuraDamage = 9999,       -- Дамаг (макс)
+    WalkSpeed = 80,
+    JumpPower = 80
+}
 
--- Головне GUI
+-- Змінні для з'єднань
+local auraConnection = nil
+local questConnection = nil
+local originalHitboxSize = nil
+
+-- Створення красивого GUI
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "FishItProGUI"
+screenGui.Name = "BloxFruitsProGUI"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
+-- Головне вікно з неоновим дизайном
 local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.new(0, 450, 0, 350)
-mainFrame.Position = UDim2.new(0.5, -225, 0.5, -175)
-mainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+mainFrame.Size = UDim2.new(0, 500, 0, 400)
+mainFrame.Position = UDim2.new(0.5, -250, 0.5, -200)
+mainFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 20)
 mainFrame.BackgroundTransparency = 0.1
 mainFrame.BorderSizePixel = 0
 mainFrame.Active = true
 mainFrame.Draggable = true
 mainFrame.Parent = screenGui
 
--- Робимо красиву обводку
+-- Градієнтний ефект для фону
+local gradient = Instance.new("UIGradient")
+gradient.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(30, 0, 50)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 20, 40))
+})
+gradient.Parent = mainFrame
+
 local uiCorner = Instance.new("UICorner")
-uiCorner.CornerRadius = UDim.new(0, 8)
+uiCorner.CornerRadius = UDim.new(0, 12)
 uiCorner.Parent = mainFrame
 
+-- Неонова обводка
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(0, 200, 255)
+stroke.Thickness = 2
+stroke.Transparency = 0.3
+stroke.Parent = mainFrame
+
+-- Заголовок
 local titleBar = Instance.new("Frame")
-titleBar.Size = UDim2.new(1, 0, 0, 40)
-titleBar.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+titleBar.Size = UDim2.new(1, 0, 0, 45)
+titleBar.BackgroundColor3 = Color3.fromRGB(20, 20, 35)
 titleBar.BorderSizePixel = 0
 titleBar.Parent = mainFrame
 
 local titleCorner = Instance.new("UICorner")
-titleCorner.CornerRadius = UDim.new(0, 8)
+titleCorner.CornerRadius = UDim.new(0, 12)
 titleCorner.Parent = titleBar
 
 local titleLabel = Instance.new("TextLabel")
-titleLabel.Size = UDim2.new(1, -40, 1, 0)
-titleLabel.Position = UDim2.new(0, 10, 0, 0)
+titleLabel.Size = UDim2.new(1, -45, 1, 0)
+titleLabel.Position = UDim2.new(0, 15, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "🎣 FISH IT PRO [2026]"
+titleLabel.Text = "⚡ BLOX FRUITS ULTIMATE ⚡"
 titleLabel.TextColor3 = Color3.fromRGB(0, 200, 255)
 titleLabel.TextScaled = true
 titleLabel.Font = Enum.Font.GothamBold
@@ -67,405 +91,396 @@ titleLabel.TextXAlignment = Enum.TextXAlignment.Left
 titleLabel.Parent = titleBar
 
 local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.new(0, 30, 0, 30)
-closeBtn.Position = UDim2.new(1, -35, 0, 5)
-closeBtn.BackgroundColor3 = Color3.fromRGB(255, 70, 70)
-closeBtn.Text = "X"
+closeBtn.Size = UDim2.new(0, 35, 0, 35)
+closeBtn.Position = UDim2.new(1, -40, 0, 5)
+closeBtn.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+closeBtn.Text = "✕"
 closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 closeBtn.TextScaled = true
 closeBtn.Font = Enum.Font.GothamBold
 closeBtn.Parent = titleBar
 
-local btnCorner = Instance.new("UICorner")
-btnCorner.CornerRadius = UDim.new(0, 6)
-btnCorner.Parent = closeBtn
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(0, 8)
+closeCorner.Parent = closeBtn
 
 closeBtn.MouseButton1Click:Connect(function()
+    -- Вимкнути все при закритті
+    settings.AuraEnabled = false
+    settings.AutoQuestEnabled = false
+    if auraConnection then auraConnection:Disconnect() end
+    if questConnection then questConnection:Disconnect() end
     screenGui:Destroy()
 end)
 
 -- Контейнер для вкладок
 local tabContainer = Instance.new("Frame")
 tabContainer.Size = UDim2.new(1, -20, 0, 40)
-tabContainer.Position = UDim2.new(0, 10, 0, 45)
+tabContainer.Position = UDim2.new(0, 10, 0, 50)
 tabContainer.BackgroundTransparency = 1
 tabContainer.Parent = mainFrame
 
-local tabs = {"🚀 Рух", "🎣 Рибалка", "📍 Телепорт", "⚙️ Інше"}
-local activeTab = "🚀 Рух"
+local tabs = {"⚔️ Атака", "🌀 Аура", "📋 Квести", "⚙️ Налаштування"}
+local activeTab = "⚔️ Атака"
 local tabButtons = {}
 local contentFrame
 
+-- Функція створення кнопки з ефектами
+local function createButton(parent, text, pos, color, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -10, 0, 40)
+    btn.Position = pos
+    btn.BackgroundColor3 = color
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.TextScaled = true
+    btn.Font = Enum.Font.GothamBold
+    btn.Parent = parent
+    
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(0, 8)
+    btnCorner.Parent = btn
+    
+    -- Ефект при наведенні
+    btn.MouseEnter:Connect(function()
+        tweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = color:Lerp(Color3.fromRGB(255,255,255), 0.3)}):Play()
+    end)
+    
+    btn.MouseLeave:Connect(function()
+        tweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = color}):Play()
+    end)
+    
+    btn.MouseButton1Click:Connect(callback)
+    
+    return btn
+end
+
+-- Функція створення слайдера
+local function createSlider(parent, title, min, max, default, pos, callback)
+    local container = Instance.new("Frame")
+    container.Size = UDim2.new(1, -10, 0, 50)
+    container.Position = pos
+    container.BackgroundTransparency = 1
+    container.Parent = parent
+    
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, 0, 0, 20)
+    label.BackgroundTransparency = 1
+    label.Text = title .. ": " .. default
+    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = container
+    
+    local sliderBg = Instance.new("Frame")
+    sliderBg.Size = UDim2.new(1, 0, 0, 10)
+    sliderBg.Position = UDim2.new(0, 0, 0, 25)
+    sliderBg.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    sliderBg.Parent = container
+    
+    local bgCorner = Instance.new("UICorner")
+    bgCorner.CornerRadius = UDim.new(0, 5)
+    bgCorner.Parent = sliderBg
+    
+    local sliderFill = Instance.new("Frame")
+    sliderFill.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
+    sliderFill.BackgroundColor3 = Color3.fromRGB(0, 200, 255)
+    sliderFill.Parent = sliderBg
+    
+    local fillCorner = Instance.new("UICorner")
+    fillCorner.CornerRadius = UDim.new(0, 5)
+    fillCorner.Parent = sliderFill
+    
+    local sliderBtn = Instance.new("TextButton")
+    sliderBtn.Size = UDim2.new(1, 0, 1, 0)
+    sliderBtn.BackgroundTransparency = 1
+    sliderBtn.Text = ""
+    sliderBtn.Parent = sliderBg
+    
+    sliderBtn.MouseButton1Down:Connect(function()
+        local moveConn = userInputService.InputChanged:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseMovement then
+                local mousePos = userInputService:GetMouseLocation()
+                local absPos = sliderBg.AbsolutePosition
+                local absSize = sliderBg.AbsoluteSize
+                local relativeX = math.clamp(mousePos.X - absPos.X, 0, absSize.X)
+                local newValue = min + (relativeX / absSize.X) * (max - min)
+                newValue = math.floor(newValue * 10) / 10
+                sliderFill.Size = UDim2.new((newValue - min) / (max - min), 0, 1, 0)
+                label.Text = title .. ": " .. newValue
+                callback(newValue)
+            end
+        end)
+        
+        local releaseConn = userInputService.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                moveConn:Disconnect()
+                releaseConn:Disconnect()
+            end
+        end)
+    end)
+    
+    return container
+end
+
+-- Функція перемикання вкладок
 local function switchTab(tabName)
     activeTab = tabName
     for _, btn in ipairs(tabButtons) do
-        btn.BackgroundColor3 = btn.Name == tabName and Color3.fromRGB(0, 150, 255) or Color3.fromRGB(45, 45, 55)
+        btn.BackgroundColor3 = btn.Name == tabName and Color3.fromRGB(0, 120, 200) or Color3.fromRGB(30, 30, 45)
     end
     if contentFrame then
         contentFrame:Destroy()
     end
     
     contentFrame = Instance.new("Frame")
-    contentFrame.Size = UDim2.new(1, -20, 1, -95)
-    contentFrame.Position = UDim2.new(0, 10, 0, 90)
+    contentFrame.Size = UDim2.new(1, -20, 1, -100)
+    contentFrame.Position = UDim2.new(0, 10, 0, 95)
     contentFrame.BackgroundTransparency = 1
     contentFrame.Parent = mainFrame
     
-    -- Додаємо контент в залежності від вибраної вкладки
-    if tabName == "🚀 Рух" then
-        -- Швидкість
-        local speedLabel = Instance.new("TextLabel")
-        speedLabel.Size = UDim2.new(1, -10, 0, 25)
-        speedLabel.Position = UDim2.new(0, 5, 0, 5)
-        speedLabel.BackgroundTransparency = 1
-        speedLabel.Text = "⚡ Швидкість бігу: " .. speedValue
-        speedLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-        speedLabel.TextXAlignment = Enum.TextXAlignment.Left
-        speedLabel.Parent = contentFrame
+    -- Контент для різних вкладок
+    if tabName == "⚔️ Атака" then
+        -- Збільшення хітбоксу
+        local hitboxLabel = Instance.new("TextLabel")
+        hitboxLabel.Size = UDim2.new(1, -10, 0, 25)
+        hitboxLabel.Position = UDim2.new(0, 5, 0, 5)
+        hitboxLabel.BackgroundTransparency = 1
+        hitboxLabel.Text = "📏 Збільшення хітбоксу: x" .. settings.HitboxMultiplier
+        hitboxLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
+        hitboxLabel.TextXAlignment = Enum.TextXAlignment.Left
+        hitboxLabel.Parent = contentFrame
         
-        local speedSlider = Instance.new("Frame")
-        speedSlider.Size = UDim2.new(1, -20, 0, 30)
-        speedSlider.Position = UDim2.new(0, 5, 0, 35)
-        speedSlider.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
-        speedSlider.Parent = contentFrame
-        
-        local sliderCorner = Instance.new("UICorner")
-        sliderCorner.CornerRadius = UDim.new(0, 6)
-        sliderCorner.Parent = speedSlider
-        
-        local sliderFill = Instance.new("Frame")
-        sliderFill.Size = UDim2.new((speedValue - 16) / 80, 0, 1, 0)
-        sliderFill.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
-        sliderFill.Parent = speedSlider
-        
-        local fillCorner = Instance.new("UICorner")
-        fillCorner.CornerRadius = UDim.new(0, 6)
-        fillCorner.Parent = sliderFill
-        
-        local sliderButton = Instance.new("TextButton")
-        sliderButton.Size = UDim2.new(1, 0, 1, 0)
-        sliderButton.BackgroundTransparency = 1
-        sliderButton.Text = ""
-        sliderButton.Parent = speedSlider
-        
-        local valueLabel = Instance.new("TextLabel")
-        valueLabel.Size = UDim2.new(1, 0, 1, 0)
-        valueLabel.BackgroundTransparency = 1
-        valueLabel.Text = tostring(speedValue)
-        valueLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-        valueLabel.Parent = speedSlider
-        
-        sliderButton.MouseButton1Down:Connect(function()
-            local moveConn
-            moveConn = userInputService.InputChanged:Connect(function(input)
-                if input.UserInputType == Enum.UserInputType.MouseMovement then
-                    local mousePos = userInputService:GetMouseLocation()
-                    local absPos = speedSlider.AbsolutePosition
-                    local absSize = speedSlider.AbsoluteSize
-                    local relativeX = math.clamp(mousePos.X - absPos.X, 0, absSize.X)
-                    local newValue = math.floor(16 + (relativeX / absSize.X) * 80)
-                    speedValue = newValue
-                    sliderFill.Size = UDim2.new((newValue - 16) / 80, 0, 1, 0)
-                    valueLabel.Text = tostring(newValue)
-                    speedLabel.Text = "⚡ Швидкість бігу: " .. newValue
-                end
-            end)
-            
-            local releaseConn
-            releaseConn = userInputService.InputEnded:Connect(function(input)
-                if input.UserInputType == Enum.UserInputType.MouseButton1 then
-                    moveConn:Disconnect()
-                    releaseConn:Disconnect()
-                end
-            end)
+        createSlider(contentFrame, "Множник хітбоксу", 1, 10, settings.HitboxMultiplier, UDim2.new(0, 5, 0, 30), function(val)
+            settings.HitboxMultiplier = val
+            hitboxLabel.Text = "📏 Збільшення хітбоксу: x" .. val
         end)
         
-        local speedToggle = Instance.new("TextButton")
-        speedToggle.Size = UDim2.new(1, -10, 0, 35)
-        speedToggle.Position = UDim2.new(0, 5, 0, 80)
-        speedToggle.BackgroundColor3 = speedEnabled and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(150, 50, 50)
-        speedToggle.Text = speedEnabled and "🟢 ВИМКНУТИ ШВИДКІСТЬ" or "🔴 УВІМКНУТИ ШВИДКІСТЬ"
-        speedToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-        speedToggle.TextScaled = true
-        speedToggle.Font = Enum.Font.GothamBold
-        speedToggle.Parent = contentFrame
-        
-        local toggleCorner = Instance.new("UICorner")
-        toggleCorner.CornerRadius = UDim.new(0, 6)
-        toggleCorner.Parent = speedToggle
-        
-        speedToggle.MouseButton1Click:Connect(function()
-            speedEnabled = not speedEnabled
-            speedToggle.Text = speedEnabled and "🟢 ВИМКНУТИ ШВИДКІСТЬ" or "🔴 УВІМКНУТИ ШВИДКІСТЬ"
-            speedToggle.BackgroundColor3 = speedEnabled and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(150, 50, 50)
-            if speedEnabled then
-                -- Використовуємо TweenService для плавного прискорення (менш помітно)
-                if player.Character and player.Character:FindFirstChild("Humanoid") then
-                    local humanoid = player.Character.Humanoid
-                    local info = TweenInfo.new(1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-                    local tween = tweenService:Create(humanoid, info, {WalkSpeed = speedValue})
-                    tween:Play()
+        createButton(contentFrame, "🔰 ЗАСТОСУВАТИ ХІТБОКС (ЯК БУДДА)", UDim2.new(0, 5, 0, 90), Color3.fromRGB(100, 50, 200), function()
+            if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                local rootPart = player.Character.HumanoidRootPart
+                -- Збільшуємо розмір персонажа для розширення хітбоксу
+                if not originalHitboxSize then
+                    originalHitboxSize = rootPart.Size
                 end
-            else
-                if player.Character and player.Character:FindFirstChild("Humanoid") then
-                    local humanoid = player.Character.Humanoid
-                    local info = TweenInfo.new(1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-                    local tween = tweenService:Create(humanoid, info, {WalkSpeed = 16})
-                    tween:Play()
+                
+                -- Анімоване збільшення
+                local info = TweenInfo.new(0.5, Enum.EasingStyle.Elastic, Enum.EasingDirection.Out)
+                local tween = tweenService:Create(rootPart, info, {Size = Vector3.new(settings.HitboxMultiplier * 2, settings.HitboxMultiplier * 2, settings.HitboxMultiplier * 2)})
+                tween:Play()
+                
+                -- Також збільшуємо інші частини тіла для кращого ефекту
+                for _, part in ipairs(player.Character:GetChildren()) do
+                    if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+                        tweenService:Create(part, info, {Size = part.Size * settings.HitboxMultiplier}):Play()
+                    end
                 end
+                
+                -- Неоновий ефект навколо персонажа
+                local auraPart = Instance.new("Part")
+                auraPart.Size = Vector3.new(10, 10, 10) * settings.HitboxMultiplier
+                auraPart.Shape = Enum.PartType.Ball
+                auraPart.BrickColor = BrickColor.new("Really blue")
+                auraPart.Material = Enum.Material.Neon
+                auraPart.Transparency = 0.7
+                auraPart.Anchored = false
+                auraPart.CanCollide = false
+                auraPart.Parent = player.Character
+                
+                local weld = Instance.new("Weld")
+                weld.Part0 = rootPart
+                weld.Part1 = auraPart
+                weld.C0 = CFrame.new(0, 0, 0)
+                weld.Parent = auraPart
+                
+                -- Зникне через 5 секунд
+                task.delay(5, function()
+                    if auraPart then
+                        tweenService:Create(auraPart, TweenInfo.new(1), {Transparency = 1}):Play()
+                        task.delay(1, function() auraPart:Destroy() end)
+                    end
+                end)
             end
         end)
         
-        -- Політ (CFrame-based, без BodyVelocity)
-        local flyToggle = Instance.new("TextButton")
-        flyToggle.Size = UDim2.new(1, -10, 0, 35)
-        flyToggle.Position = UDim2.new(0, 5, 0, 125)
-        flyToggle.BackgroundColor3 = flyEnabled and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(150, 50, 50)
-        flyToggle.Text = flyEnabled and "🟢 ВИМКНУТИ ПОЛІТ" or "🔴 УВІМКНУТИ ПОЛІТ"
-        flyToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-        flyToggle.TextScaled = true
-        flyToggle.Font = Enum.Font.GothamBold
-        flyToggle.Parent = contentFrame
+        createButton(contentFrame, "⚡ ПРИСКОРЕННЯ АТАКИ", UDim2.new(0, 5, 0, 140), Color3.fromRGB(200, 100, 0), function()
+            if player.Character and player.Character:FindFirstChild("Humanoid") then
+                local humanoid = player.Character.Humanoid
+                humanoid.WalkSpeed = settings.WalkSpeed
+                humanoid.JumpPower = settings.JumpPower
+            end
+        end)
         
-        local flyCorner = Instance.new("UICorner")
-        flyCorner.CornerRadius = UDim.new(0, 6)
-        flyCorner.Parent = flyToggle
+    elseif tabName == "🌀 Аура" then
+        -- Налаштування Кіл Аури
+        local auraStatus = Instance.new("TextLabel")
+        auraStatus.Size = UDim2.new(1, -10, 0, 30)
+        auraStatus.Position = UDim2.new(0, 5, 0, 5)
+        auraStatus.BackgroundTransparency = 1
+        auraStatus.Text = settings.AuraEnabled and "🟢 АУРА АКТИВНА" or "🔴 АУРА ВИМКНЕНА"
+        auraStatus.TextColor3 = settings.AuraEnabled and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
+        auraStatus.TextScaled = true
+        auraStatus.Font = Enum.Font.GothamBold
+        auraStatus.Parent = contentFrame
         
-        flyToggle.MouseButton1Click:Connect(function()
-            flyEnabled = not flyEnabled
-            flyToggle.Text = flyEnabled and "🟢 ВИМКНУТИ ПОЛІТ" or "🔴 УВІМКНУТИ ПОЛІТ"
-            flyToggle.BackgroundColor3 = flyEnabled and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(150, 50, 50)
+        createSlider(contentFrame, "Радіус аури", 10, 100, settings.AuraRadius, UDim2.new(0, 5, 0, 40), function(val)
+            settings.AuraRadius = val
+        end)
+        
+        createSlider(contentFrame, "Дамаг аури", 100, 99999, settings.AuraDamage, UDim2.new(0, 5, 0, 100), function(val)
+            settings.AuraDamage = val
+        end)
+        
+        createButton(contentFrame, "🌀 УВІМКНУТИ КІЛ АУРУ", UDim2.new(0, 5, 0, 160), settings.AuraEnabled and Color3.fromRGB(100, 100, 100) or Color3.fromRGB(0, 200, 100), function()
+            settings.AuraEnabled = not settings.AuraEnabled
+            auraStatus.Text = settings.AuraEnabled and "🟢 АУРА АКТИВНА" or "🔴 АУРА ВИМКНЕНА"
+            auraStatus.TextColor3 = settings.AuraEnabled and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
             
-            if flyEnabled then
-                -- Сучасний політ через зміну CFrame (без BodyVelocity)
+            if settings.AuraEnabled then
+                -- Створюємо візуальний ефект аури навколо гравця
+                local auraEffect = Instance.new("Part")
+                auraEffect.Size = Vector3.new(settings.AuraRadius * 2, 1, settings.AuraRadius * 2)
+                auraEffect.Shape = Enum.PartType.Cylinder
+                auraEffect.BrickColor = BrickColor.new("Bright red")
+                auraEffect.Material = Enum.Material.Neon
+                auraEffect.Transparency = 0.8
+                auraEffect.Anchored = false
+                auraEffect.CanCollide = false
+                auraEffect.Parent = player.Character
+                
                 if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
                     local rootPart = player.Character.HumanoidRootPart
-                    
-                    flyConnection = runService.Heartbeat:Connect(function()
-                        if not flyEnabled or not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
-                            return
-                        end
-                        
-                        local moveDirection = Vector3.new(0, 0, 0)
-                        
-                        if userInputService:IsKeyDown(Enum.KeyCode.W) then
-                            moveDirection = moveDirection + camera.CFrame.LookVector * 0.5
-                        end
-                        if userInputService:IsKeyDown(Enum.KeyCode.S) then
-                            moveDirection = moveDirection - camera.CFrame.LookVector * 0.5
-                        end
-                        if userInputService:IsKeyDown(Enum.KeyCode.A) then
-                            moveDirection = moveDirection - camera.CFrame.RightVector * 0.5
-                        end
-                        if userInputService:IsKeyDown(Enum.KeyCode.D) then
-                            moveDirection = moveDirection + camera.CFrame.RightVector * 0.5
-                        end
-                        if userInputService:IsKeyDown(Enum.KeyCode.Space) then
-                            moveDirection = moveDirection + Vector3.new(0, 0.5, 0)
-                        end
-                        if userInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
-                            moveDirection = moveDirection - Vector3.new(0, 0.5, 0)
-                        end
-                        
-                        if moveDirection.Magnitude > 0 then
-                            rootPart.CFrame = rootPart.CFrame + moveDirection
-                        end
-                    end)
+                    local weld = Instance.new("Weld")
+                    weld.Part0 = rootPart
+                    weld.Part1 = auraEffect
+                    weld.C0 = CFrame.new(0, -2, 0)
+                    weld.Parent = auraEffect
                 end
-            else
-                if flyConnection then
-                    flyConnection:Disconnect()
-                    flyConnection = nil
-                end
-            end
-        end)
-        
-    elseif tabName == "🎣 Рибалка" then
-        -- Авто-рибалка
-        local autoFishToggle = Instance.new("TextButton")
-        autoFishToggle.Size = UDim2.new(1, -10, 0, 40)
-        autoFishToggle.Position = UDim2.new(0, 5, 0, 5)
-        autoFishToggle.BackgroundColor3 = autoFishEnabled and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(150, 50, 50)
-        autoFishToggle.Text = autoFishEnabled and "🟢 ВИМКНУТИ АВТО-РИБАЛКУ" or "🔴 УВІМКНУТИ АВТО-РИБАЛКУ"
-        autoFishToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-        autoFishToggle.TextScaled = true
-        autoFishToggle.Font = Enum.Font.GothamBold
-        autoFishToggle.Parent = contentFrame
-        
-        local autoCorner = Instance.new("UICorner")
-        autoCorner.CornerRadius = UDim.new(0, 6)
-        autoCorner.Parent = autoFishToggle
-        
-        autoFishToggle.MouseButton1Click:Connect(function()
-            autoFishEnabled = not autoFishEnabled
-            autoFishToggle.Text = autoFishEnabled and "🟢 ВИМКНУТИ АВТО-РИБАЛКУ" or "🔴 УВІМКНУТИ АВТО-РИБАЛКУ"
-            autoFishToggle.BackgroundColor3 = autoFishEnabled and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(150, 50, 50)
-            
-            if autoFishEnabled then
-                autoFishConnection = runService.Heartbeat:Connect(function()
-                    -- Симулюємо кліки для риболовлі (потрібно підлаштовувати під гру)
-                    virtualUser:Button1Down(Vector2.new(), workspace.CurrentCamera.CFrame)
-                    task.wait(0.1)
-                    virtualUser:Button1Up(Vector2.new(), workspace.CurrentCamera.CFrame)
-                end)
-            else
-                if autoFishConnection then
-                    autoFishConnection:Disconnect()
-                    autoFishConnection = nil
-                end
-            end
-        end)
-        
-        local autoSellLabel = Instance.new("TextLabel")
-        autoSellLabel.Size = UDim2.new(1, -10, 0, 30)
-        autoSellLabel.Position = UDim2.new(0, 5, 0, 55)
-        autoSellLabel.BackgroundTransparency = 1
-        autoSellLabel.Text = "💸 Авто-продаж (скоро...)"
-        autoSellLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
-        autoSellLabel.TextXAlignment = Enum.TextXAlignment.Left
-        autoSellLabel.Parent = contentFrame
-        
-    elseif tabName == "📍 Телепорт" then
-        local tpLabel = Instance.new("TextLabel")
-        tpLabel.Size = UDim2.new(1, -10, 0, 30)
-        tpLabel.Position = UDim2.new(0, 5, 0, 5)
-        tpLabel.BackgroundTransparency = 1
-        tpLabel.Text = "📍 Збережені точки:"
-        tpLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-        tpLabel.TextXAlignment = Enum.TextXAlignment.Left
-        tpLabel.Parent = contentFrame
-        
-        local tpList = Instance.new("ScrollingFrame")
-        tpList.Size = UDim2.new(1, -10, 0, 150)
-        tpList.Position = UDim2.new(0, 5, 0, 40)
-        tpList.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
-        tpList.BorderSizePixel = 0
-        tpList.CanvasSize = UDim2.new(0, 0, 0, 0)
-        tpList.ScrollBarThickness = 6
-        tpList.Parent = contentFrame
-        
-        local listCorner = Instance.new("UICorner")
-        listCorner.CornerRadius = UDim.new(0, 6)
-        listCorner.Parent = tpList
-        
-        local savePointBtn = Instance.new("TextButton")
-        savePointBtn.Size = UDim2.new(0.5, -5, 0, 35)
-        savePointBtn.Position = UDim2.new(0, 5, 0, 200)
-        savePointBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 100)
-        savePointBtn.Text = "💾 Зберегти точку"
-        savePointBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-        savePointBtn.TextScaled = true
-        savePointBtn.Font = Enum.Font.Gotham
-        savePointBtn.Parent = contentFrame
-        
-        local saveCorner = Instance.new("UICorner")
-        saveCorner.CornerRadius = UDim.new(0, 6)
-        saveCorner.Parent = savePointBtn
-        
-        savePointBtn.MouseButton1Click:Connect(function()
-            if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-                local pos = player.Character.HumanoidRootPart.Position
-                table.insert(teleportWaypoints, {
-                    name = "Точка " .. #teleportWaypoints + 1,
-                    pos = pos
-                })
                 
-                -- Оновлюємо список
-                for _, child in ipairs(tpList:GetChildren()) do
-                    if child:IsA("TextButton") then
-                        child:Destroy()
+                auraConnection = runService.Heartbeat:Connect(function()
+                    if not settings.AuraEnabled or not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
+                        return
                     end
-                end
-                
-                tpList.CanvasSize = UDim2.new(0, 0, 0, #teleportWaypoints * 35)
-                
-                for i, wp in ipairs(teleportWaypoints) do
-                    local wpBtn = Instance.new("TextButton")
-                    wpBtn.Size = UDim2.new(1, -5, 0, 30)
-                    wpBtn.Position = UDim2.new(0, 0, 0, (i-1) * 35)
-                    wpBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
-                    wpBtn.Text = wp.name .. " [" .. math.floor(wp.pos.X) .. ", " .. math.floor(wp.pos.Y) .. "]"
-                    wpBtn.TextColor3 = Color3.fromRGB(200, 200, 255)
-                    wpBtn.TextScaled = true
-                    wpBtn.Font = Enum.Font.Gotham
-                    wpBtn.Parent = tpList
                     
-                    local wpCorner = Instance.new("UICorner")
-                    wpCorner.CornerRadius = UDim.new(0, 4)
-                    wpCorner.Parent = wpBtn
+                    local rootPos = player.Character.HumanoidRootPart.Position
                     
-                    wpBtn.MouseButton1Click:Connect(function()
-                        if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-                            player.Character.HumanoidRootPart.CFrame = CFrame.new(wp.pos)
+                    -- Шукаємо всіх ворогів поруч
+                    for _, enemy in ipairs(workspace:GetDescendants()) do
+                        -- Перевіряємо чи це ворог (NPC або гравець)
+                        local isEnemy = false
+                        
+                        -- NPC (початок)
+                        if enemy:IsA("Model") and enemy:FindFirstChild("Humanoid") and enemy:FindFirstChild("HumanoidRootPart") then
+                            if enemy.Name:find("Boss") or enemy.Name:find("Enemy") or enemy.Name:find("NPC") or enemy.Name:find("Mob") then
+                                isEnemy = true
+                            end
                         end
-                    end)
-                end
-            end
-        end)
-        
-    elseif tabName == "⚙️ Інше" then
-        -- ESP для риби
-        local espToggle = Instance.new("TextButton")
-        espToggle.Size = UDim2.new(1, -10, 0, 40)
-        espToggle.Position = UDim2.new(0, 5, 0, 5)
-        espToggle.BackgroundColor3 = espEnabled and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(150, 50, 50)
-        espToggle.Text = espEnabled and "🟢 ВИМКНУТИ ESP" or "🔴 УВІМКНУТИ ESP"
-        espToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-        espToggle.TextScaled = true
-        espToggle.Font = Enum.Font.GothamBold
-        espToggle.Parent = contentFrame
-        
-        local espCorner = Instance.new("UICorner")
-        espCorner.CornerRadius = UDim.new(0, 6)
-        espCorner.Parent = espToggle
-        
-        espToggle.MouseButton1Click:Connect(function()
-            espEnabled = not espEnabled
-            espToggle.Text = espEnabled and "🟢 ВИМКНУТИ ESP" or "🔴 УВІМКНУТИ ESP"
-            espToggle.BackgroundColor3 = espEnabled and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(150, 50, 50)
-            
-            if espEnabled then
-                -- Простий ESP для риби (потрібно підлаштовувати під гру)
-                local function createESP(obj)
-                    if not obj:IsA("Model") then return end
-                    
-                    local highlight = Instance.new("Highlight")
-                    highlight.FillColor = Color3.fromRGB(255, 200, 0)
-                    highlight.OutlineColor = Color3.fromRGB(255, 100, 0)
-                    highlight.FillTransparency = 0.5
-                    highlight.Adornee = obj
-                    highlight.Parent = obj
-                    
-                    return highlight
-                end
-                
-                local espConnection = workspace.DescendantAdded:Connect(function(descendant)
-                    if descendant.Name:lower():find("fish") or descendant.Name:lower():find("риба") then
-                        task.wait(0.1)
-                        if descendant:IsA("Model") then
-                            createESP(descendant)
+                        
+                        -- Інші гравці (PvP)
+                        if enemy:IsA("Player") and enemy ~= player and enemy.Character and enemy.Character:FindFirstChild("Humanoid") then
+                            isEnemy = true
+                        end
+                        
+                        if isEnemy then
+                            local enemyRoot = enemy:IsA("Player") and enemy.Character.HumanoidRootPart or enemy:FindFirstChild("HumanoidRootPart")
+                            if enemyRoot then
+                                local dist = (rootPos - enemyRoot.Position).Magnitude
+                                if dist <= settings.AuraRadius then
+                                    -- Наносимо дамаг
+                                    local humanoid = enemy:IsA("Player") and enemy.Character.Humanoid or enemy:FindFirstChild("Humanoid")
+                                    if humanoid then
+                                        humanoid:TakeDamage(settings.AuraDamage)
+                                        
+                                        -- Візуальний ефект попадання
+                                        local hitEffect = Instance.new("Part")
+                                        hitEffect.Size = Vector3.new(2, 2, 2)
+                                        hitEffect.Position = enemyRoot.Position
+                                        hitEffect.BrickColor = BrickColor.new("Bright red")
+                                        hitEffect.Material = Enum.Material.Neon
+                                        hitEffect.Transparency = 0.5
+                                        hitEffect.Anchored = true
+                                        hitEffect.CanCollide = false
+                                        hitEffect.Parent = workspace
+                                        
+                                        -- Зникне через 0.3 секунди
+                                        game:GetService("Debris"):AddItem(hitEffect, 0.3)
+                                    end
+                                end
+                            end
                         end
                     end
                 end)
-                
-                table.insert(espConnections, espConnection)
-                
-                for _, descendant in ipairs(workspace:GetDescendants()) do
-                    if descendant.Name:lower():find("fish") or descendant.Name:lower():find("риба") then
-                        if descendant:IsA("Model") then
-                            createESP(descendant)
+            else
+                if auraConnection then
+                    auraConnection:Disconnect()
+                    auraConnection = nil
+                end
+            end
+        end)
+        
+    elseif tabName == "📋 Квести" then
+        -- Авто-квести
+        createButton(contentFrame, "📋 УВІМКНУТИ АВТО-КВЕСТИ", UDim2.new(0, 5, 0, 5), settings.AutoQuestEnabled and Color3.fromRGB(100, 100, 100) or Color3.fromRGB(50, 150, 255), function()
+            settings.AutoQuestEnabled = not settings.AutoQuestEnabled
+            
+            if settings.AutoQuestEnabled then
+                questConnection = runService.Heartbeat:Connect(function()
+                    -- Простий авто-квест (шукаємо доступні квести)
+                    for _, v in ipairs(workspace:GetDescendants()) do
+                        if v.Name == "Quest" or v.Name == "QuestGiver" or v.Name == "NPC" then
+                            if v:FindFirstChild("Head") then
+                                local dist = player.Character and player.Character:FindFirstChild("HumanoidRootPart") and 
+                                    (player.Character.HumanoidRootPart.Position - v.Head.Position).Magnitude or 999
+                                
+                                if dist < 20 then
+                                    -- Авто-взаємодія з квестом
+                                    fireproximityprompt(v:FindFirstChildWhichIsA("ProximityPrompt"))
+                                elseif player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                                    -- Телепорт до квесту
+                                    player.Character.HumanoidRootPart.CFrame = v.Head.CFrame + Vector3.new(0, 5, 0)
+                                end
+                            end
                         end
                     end
-                end
+                end)
             else
-                for _, conn in ipairs(espConnections) do
-                    conn:Disconnect()
+                if questConnection then
+                    questConnection:Disconnect()
+                    questConnection = nil
                 end
-                espConnections = {}
-                
-                for _, descendant in ipairs(workspace:GetDescendants()) do
-                    if descendant:IsA("Highlight") then
-                        descendant:Destroy()
+            end
+        end)
+        
+        -- Авто-фарм
+        createButton(contentFrame, "⚔️ АВТО-ФАРМ (БІЙ)", UDim2.new(0, 5, 0, 55), Color3.fromRGB(200, 50, 50), function()
+            -- Вмикаємо ауру для фарму
+            settings.AuraEnabled = true
+            settings.AuraRadius = 40
+            -- Тут можна додати логіку пошуку найближчих ворогів
+        end)
+        
+    elseif tabName == "⚙️ Налаштування" then
+        -- Налаштування швидкості
+        createSlider(contentFrame, "Швидкість ходьби", 16, 200, settings.WalkSpeed, UDim2.new(0, 5, 0, 5), function(val)
+            settings.WalkSpeed = val
+            if player.Character and player.Character:FindFirstChild("Humanoid") then
+                player.Character.Humanoid.WalkSpeed = val
+            end
+        end)
+        
+        createSlider(contentFrame, "Сила стрибка", 50, 200, settings.JumpPower, UDim2.new(0, 5, 0, 65), function(val)
+            settings.JumpPower = val
+            if player.Character and player.Character:FindFirstChild("Humanoid") then
+                player.Character.Humanoid.JumpPower = val
+            end
+        end)
+        
+        -- Телепорт до фрукта (простий приклад)
+        createButton(contentFrame, "🍎 ТЕЛЕПОРТ ДО ФРУКТА", UDim2.new(0, 5, 0, 125), Color3.fromRGB(255, 150, 0), function()
+            for _, v in ipairs(workspace:GetDescendants()) do
+                if v.Name:find("Fruit") or v.Name:find("Apple") or v.Name:find("Fruit") then
+                    if v:IsA("BasePart") and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                        player.Character.HumanoidRootPart.CFrame = v.CFrame + Vector3.new(0, 5, 0)
+                        break
                     end
                 end
             end
@@ -476,9 +491,9 @@ end
 -- Створюємо вкладки
 for i, tabName in ipairs(tabs) do
     local tabBtn = Instance.new("TextButton")
-    tabBtn.Size = UDim2.new(0, (450 - 40) / #tabs, 0, 35)
-    tabBtn.Position = UDim2.new(0, (i-1) * ((450 - 40) / #tabs), 0, 0)
-    tabBtn.BackgroundColor3 = i == 1 and Color3.fromRGB(0, 150, 255) or Color3.fromRGB(45, 45, 55)
+    tabBtn.Size = UDim2.new(0, (500 - 40) / #tabs, 0, 35)
+    tabBtn.Position = UDim2.new(0, (i-1) * ((500 - 40) / #tabs), 0, 0)
+    tabBtn.BackgroundColor3 = i == 1 and Color3.fromRGB(0, 120, 200) or Color3.fromRGB(30, 30, 45)
     tabBtn.Text = tabName
     tabBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
     tabBtn.TextScaled = true
@@ -490,6 +505,19 @@ for i, tabName in ipairs(tabs) do
     tabCorner.CornerRadius = UDim.new(0, 6)
     tabCorner.Parent = tabBtn
     
+    -- Ефект при наведенні
+    tabBtn.MouseEnter:Connect(function()
+        if tabBtn.BackgroundColor3 ~= Color3.fromRGB(0, 120, 200) then
+            tweenService:Create(tabBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(50, 50, 70)}):Play()
+        end
+    end)
+    
+    tabBtn.MouseLeave:Connect(function()
+        if tabBtn.BackgroundColor3 ~= Color3.fromRGB(0, 120, 200) then
+            tweenService:Create(tabBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(30, 30, 45)}):Play()
+        end
+    end)
+    
     tabBtn.MouseButton1Click:Connect(function()
         switchTab(tabName)
     end)
@@ -497,6 +525,6 @@ for i, tabName in ipairs(tabs) do
     table.insert(tabButtons, tabBtn)
 end
 
-switchTab("🚀 Рух")
+switchTab("⚔️ Атака")
 
-print("✅ Імба-чит для Fish It завантажено! Насолоджуйся ;)")
+print("✅ БОЖЕСТВЕННИЙ СКРИПТ ЗАВАНТАЖЕНО!")
