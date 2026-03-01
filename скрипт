@@ -1,101 +1,502 @@
-local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
-local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/main/Addons/SaveManager.lua"))()
-local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/main/Addons/InterfaceManager.lua"))()
+--[[
+    Δ ИМБОВИЙ ЧИТ ДЛЯ FISH IT (FISCH) Δ
+    Функції: телепорт, авто-рибалка, прискорення, ESP
+    Використовуй з розумом на свій страх і ризик.
+]]
 
-local Window = Fluent:CreateWindow({
-    Title = "zxcimpact Hub | Fisch Mobile",
-    SubTitle = "by Unknown",
-    TabWidth = 160,
-    Size = UDim2.fromOffset(450, 320),
-    Acrylic = true,
-    Theme = "Dark",
-    MinimizeKey = Enum.KeyCode.LeftControl -- На телефоне будет кнопка минимизации
-})
+-- Перевіряємо, чи є гра, і створюємо головне меню
+local player = game:GetService("Players").LocalPlayer
+local workspace = game:GetService("Workspace")
+local runService = game:GetService("RunService")
+local userInputService = game:GetService("UserInputService")
+local tweenService = game:GetService("TweenService")
+local virtualUser = game:GetService("VirtualUser")
+local camera = workspace.CurrentCamera
 
-local Tabs = {
-    Main = Window:AddTab({ Title = "Основное", Icon = "home" }),
-    Settings = Window:AddTab({ Title = "Настройки", Icon = "settings" })
-}
+-- Змінні для стану читів
+local speedEnabled = false
+local speedValue = 64 -- Значення за замовчуванням
+local flyEnabled = false
+local flyConnection = nil
+local autoFishEnabled = false
+local autoFishConnection = nil
+local espEnabled = false
+local espConnections = {}
+local teleportWaypoints = {} -- Для збереження точок телепорту
 
-local Options = Fluent.Options
+-- Головне GUI
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "FishItProGUI"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = player:WaitForChild("PlayerGui")
 
--- Константы для полета
-local lp = game.Players.LocalPlayer
-local flySpeed = 50
-local flying = false
-local bv, bg
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 450, 0, 350)
+mainFrame.Position = UDim2.new(0.5, -225, 0.5, -175)
+mainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+mainFrame.BackgroundTransparency = 0.1
+mainFrame.BorderSizePixel = 0
+mainFrame.Active = true
+mainFrame.Draggable = true
+mainFrame.Parent = screenGui
 
--- Функция полета для мобилок
-local function toggleFly(state)
-    flying = state
-    local char = lp.Character or lp.CharacterAdded:Wait()
-    local root = char:WaitForChild("HumanoidRootPart")
+-- Робимо красиву обводку
+local uiCorner = Instance.new("UICorner")
+uiCorner.CornerRadius = UDim.new(0, 8)
+uiCorner.Parent = mainFrame
 
-    if flying then
-        bv = Instance.new("BodyVelocity")
-        bv.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-        bv.Velocity = Vector3.new(0, 0, 0)
-        bv.Parent = root
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 40)
+titleBar.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+titleBar.BorderSizePixel = 0
+titleBar.Parent = mainFrame
 
-        bg = Instance.new("BodyGyro")
-        bg.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
-        bg.P = 10000
-        bg.Parent = root
+local titleCorner = Instance.new("UICorner")
+titleCorner.CornerRadius = UDim.new(0, 8)
+titleCorner.Parent = titleBar
 
-        task.spawn(function()
-            while flying and task.wait() do
-                local cam = workspace.CurrentCamera
-                -- На мобилках летим туда, куда смотрит камера
-                bv.Velocity = cam.CFrame.LookVector * flySpeed
-                bg.CFrame = cam.CFrame
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, -40, 1, 0)
+titleLabel.Position = UDim2.new(0, 10, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "🎣 FISH IT PRO [2026]"
+titleLabel.TextColor3 = Color3.fromRGB(0, 200, 255)
+titleLabel.TextScaled = true
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = titleBar
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 30, 0, 30)
+closeBtn.Position = UDim2.new(1, -35, 0, 5)
+closeBtn.BackgroundColor3 = Color3.fromRGB(255, 70, 70)
+closeBtn.Text = "X"
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.TextScaled = true
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.Parent = titleBar
+
+local btnCorner = Instance.new("UICorner")
+btnCorner.CornerRadius = UDim.new(0, 6)
+btnCorner.Parent = closeBtn
+
+closeBtn.MouseButton1Click:Connect(function()
+    screenGui:Destroy()
+end)
+
+-- Контейнер для вкладок
+local tabContainer = Instance.new("Frame")
+tabContainer.Size = UDim2.new(1, -20, 0, 40)
+tabContainer.Position = UDim2.new(0, 10, 0, 45)
+tabContainer.BackgroundTransparency = 1
+tabContainer.Parent = mainFrame
+
+local tabs = {"🚀 Рух", "🎣 Рибалка", "📍 Телепорт", "⚙️ Інше"}
+local activeTab = "🚀 Рух"
+local tabButtons = {}
+local contentFrame
+
+local function switchTab(tabName)
+    activeTab = tabName
+    for _, btn in ipairs(tabButtons) do
+        btn.BackgroundColor3 = btn.Name == tabName and Color3.fromRGB(0, 150, 255) or Color3.fromRGB(45, 45, 55)
+    end
+    if contentFrame then
+        contentFrame:Destroy()
+    end
+    
+    contentFrame = Instance.new("Frame")
+    contentFrame.Size = UDim2.new(1, -20, 1, -95)
+    contentFrame.Position = UDim2.new(0, 10, 0, 90)
+    contentFrame.BackgroundTransparency = 1
+    contentFrame.Parent = mainFrame
+    
+    -- Додаємо контент в залежності від вибраної вкладки
+    if tabName == "🚀 Рух" then
+        -- Швидкість
+        local speedLabel = Instance.new("TextLabel")
+        speedLabel.Size = UDim2.new(1, -10, 0, 25)
+        speedLabel.Position = UDim2.new(0, 5, 0, 5)
+        speedLabel.BackgroundTransparency = 1
+        speedLabel.Text = "⚡ Швидкість бігу: " .. speedValue
+        speedLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        speedLabel.TextXAlignment = Enum.TextXAlignment.Left
+        speedLabel.Parent = contentFrame
+        
+        local speedSlider = Instance.new("Frame")
+        speedSlider.Size = UDim2.new(1, -20, 0, 30)
+        speedSlider.Position = UDim2.new(0, 5, 0, 35)
+        speedSlider.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+        speedSlider.Parent = contentFrame
+        
+        local sliderCorner = Instance.new("UICorner")
+        sliderCorner.CornerRadius = UDim.new(0, 6)
+        sliderCorner.Parent = speedSlider
+        
+        local sliderFill = Instance.new("Frame")
+        sliderFill.Size = UDim2.new((speedValue - 16) / 80, 0, 1, 0)
+        sliderFill.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+        sliderFill.Parent = speedSlider
+        
+        local fillCorner = Instance.new("UICorner")
+        fillCorner.CornerRadius = UDim.new(0, 6)
+        fillCorner.Parent = sliderFill
+        
+        local sliderButton = Instance.new("TextButton")
+        sliderButton.Size = UDim2.new(1, 0, 1, 0)
+        sliderButton.BackgroundTransparency = 1
+        sliderButton.Text = ""
+        sliderButton.Parent = speedSlider
+        
+        local valueLabel = Instance.new("TextLabel")
+        valueLabel.Size = UDim2.new(1, 0, 1, 0)
+        valueLabel.BackgroundTransparency = 1
+        valueLabel.Text = tostring(speedValue)
+        valueLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        valueLabel.Parent = speedSlider
+        
+        sliderButton.MouseButton1Down:Connect(function()
+            local moveConn
+            moveConn = userInputService.InputChanged:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseMovement then
+                    local mousePos = userInputService:GetMouseLocation()
+                    local absPos = speedSlider.AbsolutePosition
+                    local absSize = speedSlider.AbsoluteSize
+                    local relativeX = math.clamp(mousePos.X - absPos.X, 0, absSize.X)
+                    local newValue = math.floor(16 + (relativeX / absSize.X) * 80)
+                    speedValue = newValue
+                    sliderFill.Size = UDim2.new((newValue - 16) / 80, 0, 1, 0)
+                    valueLabel.Text = tostring(newValue)
+                    speedLabel.Text = "⚡ Швидкість бігу: " .. newValue
+                end
+            end)
+            
+            local releaseConn
+            releaseConn = userInputService.InputEnded:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                    moveConn:Disconnect()
+                    releaseConn:Disconnect()
+                end
+            end)
+        end)
+        
+        local speedToggle = Instance.new("TextButton")
+        speedToggle.Size = UDim2.new(1, -10, 0, 35)
+        speedToggle.Position = UDim2.new(0, 5, 0, 80)
+        speedToggle.BackgroundColor3 = speedEnabled and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(150, 50, 50)
+        speedToggle.Text = speedEnabled and "🟢 ВИМКНУТИ ШВИДКІСТЬ" or "🔴 УВІМКНУТИ ШВИДКІСТЬ"
+        speedToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+        speedToggle.TextScaled = true
+        speedToggle.Font = Enum.Font.GothamBold
+        speedToggle.Parent = contentFrame
+        
+        local toggleCorner = Instance.new("UICorner")
+        toggleCorner.CornerRadius = UDim.new(0, 6)
+        toggleCorner.Parent = speedToggle
+        
+        speedToggle.MouseButton1Click:Connect(function()
+            speedEnabled = not speedEnabled
+            speedToggle.Text = speedEnabled and "🟢 ВИМКНУТИ ШВИДКІСТЬ" or "🔴 УВІМКНУТИ ШВИДКІСТЬ"
+            speedToggle.BackgroundColor3 = speedEnabled and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(150, 50, 50)
+            if speedEnabled then
+                -- Використовуємо TweenService для плавного прискорення (менш помітно)
+                if player.Character and player.Character:FindFirstChild("Humanoid") then
+                    local humanoid = player.Character.Humanoid
+                    local info = TweenInfo.new(1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+                    local tween = tweenService:Create(humanoid, info, {WalkSpeed = speedValue})
+                    tween:Play()
+                end
+            else
+                if player.Character and player.Character:FindFirstChild("Humanoid") then
+                    local humanoid = player.Character.Humanoid
+                    local info = TweenInfo.new(1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+                    local tween = tweenService:Create(humanoid, info, {WalkSpeed = 16})
+                    tween:Play()
+                end
             end
-            if bv then bv:Destroy() end
-            if bg then bg:Destroy() end
+        end)
+        
+        -- Політ (CFrame-based, без BodyVelocity)
+        local flyToggle = Instance.new("TextButton")
+        flyToggle.Size = UDim2.new(1, -10, 0, 35)
+        flyToggle.Position = UDim2.new(0, 5, 0, 125)
+        flyToggle.BackgroundColor3 = flyEnabled and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(150, 50, 50)
+        flyToggle.Text = flyEnabled and "🟢 ВИМКНУТИ ПОЛІТ" or "🔴 УВІМКНУТИ ПОЛІТ"
+        flyToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+        flyToggle.TextScaled = true
+        flyToggle.Font = Enum.Font.GothamBold
+        flyToggle.Parent = contentFrame
+        
+        local flyCorner = Instance.new("UICorner")
+        flyCorner.CornerRadius = UDim.new(0, 6)
+        flyCorner.Parent = flyToggle
+        
+        flyToggle.MouseButton1Click:Connect(function()
+            flyEnabled = not flyEnabled
+            flyToggle.Text = flyEnabled and "🟢 ВИМКНУТИ ПОЛІТ" or "🔴 УВІМКНУТИ ПОЛІТ"
+            flyToggle.BackgroundColor3 = flyEnabled and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(150, 50, 50)
+            
+            if flyEnabled then
+                -- Сучасний політ через зміну CFrame (без BodyVelocity)
+                if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                    local rootPart = player.Character.HumanoidRootPart
+                    
+                    flyConnection = runService.Heartbeat:Connect(function()
+                        if not flyEnabled or not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
+                            return
+                        end
+                        
+                        local moveDirection = Vector3.new(0, 0, 0)
+                        
+                        if userInputService:IsKeyDown(Enum.KeyCode.W) then
+                            moveDirection = moveDirection + camera.CFrame.LookVector * 0.5
+                        end
+                        if userInputService:IsKeyDown(Enum.KeyCode.S) then
+                            moveDirection = moveDirection - camera.CFrame.LookVector * 0.5
+                        end
+                        if userInputService:IsKeyDown(Enum.KeyCode.A) then
+                            moveDirection = moveDirection - camera.CFrame.RightVector * 0.5
+                        end
+                        if userInputService:IsKeyDown(Enum.KeyCode.D) then
+                            moveDirection = moveDirection + camera.CFrame.RightVector * 0.5
+                        end
+                        if userInputService:IsKeyDown(Enum.KeyCode.Space) then
+                            moveDirection = moveDirection + Vector3.new(0, 0.5, 0)
+                        end
+                        if userInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+                            moveDirection = moveDirection - Vector3.new(0, 0.5, 0)
+                        end
+                        
+                        if moveDirection.Magnitude > 0 then
+                            rootPart.CFrame = rootPart.CFrame + moveDirection
+                        end
+                    end)
+                end
+            else
+                if flyConnection then
+                    flyConnection:Disconnect()
+                    flyConnection = nil
+                end
+            end
+        end)
+        
+    elseif tabName == "🎣 Рибалка" then
+        -- Авто-рибалка
+        local autoFishToggle = Instance.new("TextButton")
+        autoFishToggle.Size = UDim2.new(1, -10, 0, 40)
+        autoFishToggle.Position = UDim2.new(0, 5, 0, 5)
+        autoFishToggle.BackgroundColor3 = autoFishEnabled and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(150, 50, 50)
+        autoFishToggle.Text = autoFishEnabled and "🟢 ВИМКНУТИ АВТО-РИБАЛКУ" or "🔴 УВІМКНУТИ АВТО-РИБАЛКУ"
+        autoFishToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+        autoFishToggle.TextScaled = true
+        autoFishToggle.Font = Enum.Font.GothamBold
+        autoFishToggle.Parent = contentFrame
+        
+        local autoCorner = Instance.new("UICorner")
+        autoCorner.CornerRadius = UDim.new(0, 6)
+        autoCorner.Parent = autoFishToggle
+        
+        autoFishToggle.MouseButton1Click:Connect(function()
+            autoFishEnabled = not autoFishEnabled
+            autoFishToggle.Text = autoFishEnabled and "🟢 ВИМКНУТИ АВТО-РИБАЛКУ" or "🔴 УВІМКНУТИ АВТО-РИБАЛКУ"
+            autoFishToggle.BackgroundColor3 = autoFishEnabled and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(150, 50, 50)
+            
+            if autoFishEnabled then
+                autoFishConnection = runService.Heartbeat:Connect(function()
+                    -- Симулюємо кліки для риболовлі (потрібно підлаштовувати під гру)
+                    virtualUser:Button1Down(Vector2.new(), workspace.CurrentCamera.CFrame)
+                    task.wait(0.1)
+                    virtualUser:Button1Up(Vector2.new(), workspace.CurrentCamera.CFrame)
+                end)
+            else
+                if autoFishConnection then
+                    autoFishConnection:Disconnect()
+                    autoFishConnection = nil
+                end
+            end
+        end)
+        
+        local autoSellLabel = Instance.new("TextLabel")
+        autoSellLabel.Size = UDim2.new(1, -10, 0, 30)
+        autoSellLabel.Position = UDim2.new(0, 5, 0, 55)
+        autoSellLabel.BackgroundTransparency = 1
+        autoSellLabel.Text = "💸 Авто-продаж (скоро...)"
+        autoSellLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+        autoSellLabel.TextXAlignment = Enum.TextXAlignment.Left
+        autoSellLabel.Parent = contentFrame
+        
+    elseif tabName == "📍 Телепорт" then
+        local tpLabel = Instance.new("TextLabel")
+        tpLabel.Size = UDim2.new(1, -10, 0, 30)
+        tpLabel.Position = UDim2.new(0, 5, 0, 5)
+        tpLabel.BackgroundTransparency = 1
+        tpLabel.Text = "📍 Збережені точки:"
+        tpLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        tpLabel.TextXAlignment = Enum.TextXAlignment.Left
+        tpLabel.Parent = contentFrame
+        
+        local tpList = Instance.new("ScrollingFrame")
+        tpList.Size = UDim2.new(1, -10, 0, 150)
+        tpList.Position = UDim2.new(0, 5, 0, 40)
+        tpList.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+        tpList.BorderSizePixel = 0
+        tpList.CanvasSize = UDim2.new(0, 0, 0, 0)
+        tpList.ScrollBarThickness = 6
+        tpList.Parent = contentFrame
+        
+        local listCorner = Instance.new("UICorner")
+        listCorner.CornerRadius = UDim.new(0, 6)
+        listCorner.Parent = tpList
+        
+        local savePointBtn = Instance.new("TextButton")
+        savePointBtn.Size = UDim2.new(0.5, -5, 0, 35)
+        savePointBtn.Position = UDim2.new(0, 5, 0, 200)
+        savePointBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 100)
+        savePointBtn.Text = "💾 Зберегти точку"
+        savePointBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        savePointBtn.TextScaled = true
+        savePointBtn.Font = Enum.Font.Gotham
+        savePointBtn.Parent = contentFrame
+        
+        local saveCorner = Instance.new("UICorner")
+        saveCorner.CornerRadius = UDim.new(0, 6)
+        saveCorner.Parent = savePointBtn
+        
+        savePointBtn.MouseButton1Click:Connect(function()
+            if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                local pos = player.Character.HumanoidRootPart.Position
+                table.insert(teleportWaypoints, {
+                    name = "Точка " .. #teleportWaypoints + 1,
+                    pos = pos
+                })
+                
+                -- Оновлюємо список
+                for _, child in ipairs(tpList:GetChildren()) do
+                    if child:IsA("TextButton") then
+                        child:Destroy()
+                    end
+                end
+                
+                tpList.CanvasSize = UDim2.new(0, 0, 0, #teleportWaypoints * 35)
+                
+                for i, wp in ipairs(teleportWaypoints) do
+                    local wpBtn = Instance.new("TextButton")
+                    wpBtn.Size = UDim2.new(1, -5, 0, 30)
+                    wpBtn.Position = UDim2.new(0, 0, 0, (i-1) * 35)
+                    wpBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+                    wpBtn.Text = wp.name .. " [" .. math.floor(wp.pos.X) .. ", " .. math.floor(wp.pos.Y) .. "]"
+                    wpBtn.TextColor3 = Color3.fromRGB(200, 200, 255)
+                    wpBtn.TextScaled = true
+                    wpBtn.Font = Enum.Font.Gotham
+                    wpBtn.Parent = tpList
+                    
+                    local wpCorner = Instance.new("UICorner")
+                    wpCorner.CornerRadius = UDim.new(0, 4)
+                    wpCorner.Parent = wpBtn
+                    
+                    wpBtn.MouseButton1Click:Connect(function()
+                        if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                            player.Character.HumanoidRootPart.CFrame = CFrame.new(wp.pos)
+                        end
+                    end)
+                end
+            end
+        end)
+        
+    elseif tabName == "⚙️ Інше" then
+        -- ESP для риби
+        local espToggle = Instance.new("TextButton")
+        espToggle.Size = UDim2.new(1, -10, 0, 40)
+        espToggle.Position = UDim2.new(0, 5, 0, 5)
+        espToggle.BackgroundColor3 = espEnabled and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(150, 50, 50)
+        espToggle.Text = espEnabled and "🟢 ВИМКНУТИ ESP" or "🔴 УВІМКНУТИ ESP"
+        espToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+        espToggle.TextScaled = true
+        espToggle.Font = Enum.Font.GothamBold
+        espToggle.Parent = contentFrame
+        
+        local espCorner = Instance.new("UICorner")
+        espCorner.CornerRadius = UDim.new(0, 6)
+        espCorner.Parent = espToggle
+        
+        espToggle.MouseButton1Click:Connect(function()
+            espEnabled = not espEnabled
+            espToggle.Text = espEnabled and "🟢 ВИМКНУТИ ESP" or "🔴 УВІМКНУТИ ESP"
+            espToggle.BackgroundColor3 = espEnabled and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(150, 50, 50)
+            
+            if espEnabled then
+                -- Простий ESP для риби (потрібно підлаштовувати під гру)
+                local function createESP(obj)
+                    if not obj:IsA("Model") then return end
+                    
+                    local highlight = Instance.new("Highlight")
+                    highlight.FillColor = Color3.fromRGB(255, 200, 0)
+                    highlight.OutlineColor = Color3.fromRGB(255, 100, 0)
+                    highlight.FillTransparency = 0.5
+                    highlight.Adornee = obj
+                    highlight.Parent = obj
+                    
+                    return highlight
+                end
+                
+                local espConnection = workspace.DescendantAdded:Connect(function(descendant)
+                    if descendant.Name:lower():find("fish") or descendant.Name:lower():find("риба") then
+                        task.wait(0.1)
+                        if descendant:IsA("Model") then
+                            createESP(descendant)
+                        end
+                    end
+                end)
+                
+                table.insert(espConnections, espConnection)
+                
+                for _, descendant in ipairs(workspace:GetDescendants()) do
+                    if descendant.Name:lower():find("fish") or descendant.Name:lower():find("риба") then
+                        if descendant:IsA("Model") then
+                            createESP(descendant)
+                        end
+                    end
+                end
+            else
+                for _, conn in ipairs(espConnections) do
+                    conn:Disconnect()
+                end
+                espConnections = {}
+                
+                for _, descendant in ipairs(workspace:GetDescendants()) do
+                    if descendant:IsA("Highlight") then
+                        descendant:Destroy()
+                    end
+                end
+            end
         end)
     end
 end
 
--- Слайдер скорости
-Tabs.Main:AddSlider("FlySpeed", {
-    Title = "Скорость полета",
-    Description = "Не ставь слишком много, чтобы не кикнуло",
-    Default = 50,
-    Min = 0,
-    Max = 300,
-    Rounding = 0,
-    Callback = function(Value)
-        flySpeed = Value
-    end
-})
+-- Створюємо вкладки
+for i, tabName in ipairs(tabs) do
+    local tabBtn = Instance.new("TextButton")
+    tabBtn.Size = UDim2.new(0, (450 - 40) / #tabs, 0, 35)
+    tabBtn.Position = UDim2.new(0, (i-1) * ((450 - 40) / #tabs), 0, 0)
+    tabBtn.BackgroundColor3 = i == 1 and Color3.fromRGB(0, 150, 255) or Color3.fromRGB(45, 45, 55)
+    tabBtn.Text = tabName
+    tabBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    tabBtn.TextScaled = true
+    tabBtn.Font = Enum.Font.Gotham
+    tabBtn.Name = tabName
+    tabBtn.Parent = tabContainer
+    
+    local tabCorner = Instance.new("UICorner")
+    tabCorner.CornerRadius = UDim.new(0, 6)
+    tabCorner.Parent = tabBtn
+    
+    tabBtn.MouseButton1Click:Connect(function()
+        switchTab(tabName)
+    end)
+    
+    table.insert(tabButtons, tabBtn)
+end
 
--- Включалка полета
-Tabs.Main:AddToggle("FlyToggle", {
-    Title = "Режим полета",
-    Default = false,
-    Callback = function(Value)
-        toggleFly(Value)
-    end
-})
+switchTab("🚀 Рух")
 
--- Дополнительная имба: Ускорение персонажа (WalkSpeed)
-Tabs.Main:AddSlider("WalkSpeed", {
-    Title = "Скорость бега",
-    Default = 16,
-    Min = 16,
-    Max = 150,
-    Rounding = 0,
-    Callback = function(Value)
-        if lp.Character and lp.Character:FindFirstChild("Humanoid") then
-            lp.Character.Humanoid.WalkSpeed = Value
-        end
-    end
-})
-
--- Уведомление о запуске
-Fluent:Notify({
-    Title = "zxcimpact Hub",
-    Content = "Скрипт успешно инжекчен! Можешь летать.",
-    Duration = 5
-})
-
-Window:SelectTab(1)
+print("✅ Імба-чит для Fish It завантажено! Насолоджуйся ;)")
