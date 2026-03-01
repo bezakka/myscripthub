@@ -1,0 +1,173 @@
+-- Простий скрипт для польоту (Fly Hack)
+-- Засновано на деобфусцированій версії Brainrot Script v2.0 [citation:2]
+
+local player = game:GetService("Players").LocalPlayer
+local mouse = player:GetMouse()
+local uis = game:GetService("UserInputService")
+local runService = game:GetService("RunService")
+local camera = game:GetService("Workspace").CurrentCamera
+
+local flying = false
+local flySpeed = 50
+local bodyGyro, bodyVelocity
+local connections = {}
+
+-- Функція створення простого інтерфейсу
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "FlyGui"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 200, 0, 100)
+frame.Position = UDim2.new(0.8, 0, 0.1, 0)
+frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+frame.BackgroundTransparency = 0.2
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Draggable = true
+frame.Parent = screenGui
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0.3, 0)
+title.BackgroundTransparency = 1
+title.Text = "FLY HACK"
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
+title.TextScaled = true
+title.Font = Enum.Font.GothamBold
+title.Parent = frame
+
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.new(0.8, 0, 0.4, 0)
+toggleBtn.Position = UDim2.new(0.1, 0, 0.4, 0)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
+toggleBtn.Text = "УВІМКНУТИ"
+toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+toggleBtn.TextScaled = true
+toggleBtn.Font = Enum.Font.Gotham
+toggleBtn.Parent = frame
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1, 0, 0.2, 0)
+statusLabel.Position = UDim2.new(0, 0, 0.8, 0)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = "Статус: Вимкнено"
+statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+statusLabel.TextScaled = true
+statusLabel.Font = Enum.Font.Gotham
+statusLabel.Parent = frame
+
+-- Функція польоту
+local function startFly()
+    if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
+        return
+    end
+    
+    local rootPart = player.Character.HumanoidRootPart
+    
+    -- Створюємо об'єкти для керування польотом
+    bodyGyro = Instance.new("BodyGyro")
+    bodyGyro.P = 9e4
+    bodyGyro.MaxTorque = Vector3.new(9e4, 9e4, 9e4)
+    bodyGyro.CFrame = rootPart.CFrame
+    bodyGyro.Parent = rootPart
+    
+    bodyVelocity = Instance.new("BodyVelocity")
+    bodyVelocity.Velocity = Vector3.new(0, 0, 0)
+    bodyVelocity.MaxForce = Vector3.new(9e4, 9e4, 9e4)
+    bodyVelocity.Parent = rootPart
+    
+    flying = true
+    toggleBtn.Text = "ВИМКНУТИ"
+    toggleBtn.BackgroundColor3 = Color3.fromRGB(150, 50, 50)
+    statusLabel.Text = "Статус: Летимо ✈️"
+    statusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+    
+    -- Функція оновлення польоту (WASD + Space/Shift)
+    local function flyUpdate()
+        if not flying or not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
+            return
+        end
+        
+        local rootPart = player.Character.HumanoidRootPart
+        local moveDirection = Vector3.new(0, 0, 0)
+        
+        -- Визначаємо напрямок польоту відносно камери
+        if uis:IsKeyDown(Enum.KeyCode.W) then
+            moveDirection = moveDirection + (camera.CFrame.LookVector * flySpeed)
+        end
+        if uis:IsKeyDown(Enum.KeyCode.S) then
+            moveDirection = moveDirection - (camera.CFrame.LookVector * flySpeed)
+        end
+        if uis:IsKeyDown(Enum.KeyCode.A) then
+            moveDirection = moveDirection - (camera.CFrame.RightVector * flySpeed)
+        end
+        if uis:IsKeyDown(Enum.KeyCode.D) then
+            moveDirection = moveDirection + (camera.CFrame.RightVector * flySpeed)
+        end
+        if uis:IsKeyDown(Enum.KeyCode.Space) then
+            moveDirection = moveDirection + Vector3.new(0, flySpeed, 0)
+        end
+        if uis:IsKeyDown(Enum.KeyCode.LeftShift) then
+            moveDirection = moveDirection - Vector3.new(0, flySpeed, 0)
+        end
+        
+        -- Застосовуємо швидкість
+        if bodyVelocity then
+            bodyVelocity.Velocity = moveDirection
+        end
+        
+        -- Плавно повертаємо персонажа за напрямком камери
+        if bodyGyro then
+            bodyGyro.CFrame = CFrame.new(rootPart.Position, rootPart.Position + camera.CFrame.LookVector)
+        end
+    end
+    
+    -- Підключаємо оновлення
+    local connection = runService.Heartbeat:Connect(flyUpdate)
+    table.insert(connections, connection)
+end
+
+local function stopFly()
+    flying = false
+    
+    -- Видаляємо об'єкти керування
+    if bodyGyro then
+        bodyGyro:Destroy()
+        bodyGyro = nil
+    end
+    if bodyVelocity then
+        bodyVelocity:Destroy()
+        bodyVelocity = nil
+    end
+    
+    -- Відключаємо оновлення
+    for _, conn in ipairs(connections) do
+        conn:Disconnect()
+    end
+    connections = {}
+    
+    toggleBtn.Text = "УВІМКНУТИ"
+    toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
+    statusLabel.Text = "Статус: Вимкнено"
+    statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+end
+
+-- Обробник кнопки
+toggleBtn.MouseButton1Click:Connect(function()
+    if flying then
+        stopFly()
+    else
+        startFly()
+    end
+end)
+
+-- Автоматичне вимкнення при смерті чи зміні персонажа
+player.CharacterAdded:Connect(function()
+    if flying then
+        stopFly()
+    end
+end)
+
+-- Повідомлення про успішне завантаження
+print("✅ Скрипт польоту завантажено! Натисни кнопку в інтерфейсі.")
