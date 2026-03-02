@@ -1,560 +1,170 @@
--- ╔══════════════════════════════════════╗
--- ║   Blox Fruits Mobile Script V2       ║
--- ║   AutoFarm | AutoQuest | Flight      ║
--- ║   Для Delta Executor X (телефон)     ║
--- ╚══════════════════════════════════════╝
+--===================================================================
+-- ПРОСТОЙ РАБОЧИЙ СКРИПТ ДЛЯ BLOX FRUITS (Mobile)
+--===================================================================
 
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
 local Player = Players.LocalPlayer
 local Character = Player.Character or Player.CharacterAdded:Wait()
-local HRP = Character:WaitForChild("HumanoidRootPart")
 local Humanoid = Character:WaitForChild("Humanoid")
+local HRP = Character:WaitForChild("HumanoidRootPart")
 
-local Config = {
-    AutoFarm = false,
-    AutoQuest = false,
-    AutoHaki = false,
-    AutoBoss = false,
-    AutoChest = false,
-    Flight = false,
-    FarmRadius = 60,
-    FlightSpeed = 70,
-    WalkSpeed = 28,
-    JumpPower = 50,
-    Minimized = false,
-    Theme = "Dark"
-}
+-- Настройки
+local Walkspeed = 50
+local JumpPower = 70
+local AutoFarm = false
+local Target = nil
 
--- ═══════════════════════════════════════
---          СОЗДАНИЕ УЛУЧШЕННОГО GUI
--- ═══════════════════════════════════════
+-- Устанавливаем скорость и прыжок
+Humanoid.WalkSpeed = Walkspeed
+Humanoid.JumpPower = JumpPower
+
+--===================================================================
+-- СОЗДАНИЕ ПРОСТОГО МЕНЮ
+--===================================================================
+
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "BFMobileHub_V2"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = Player.PlayerGui
+ScreenGui.ResetOnSpawn = false
 
--- Анимации для меню
-local TweenInfo_Expand = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-
--- Основное меню
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 220, 0, 380)
-MainFrame.Position = UDim2.new(0, 15, 0.3, 0)
-MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 35)
-MainFrame.BorderSizePixel = 0
+MainFrame.Size = UDim2.new(0, 200, 0, 300)
+MainFrame.Position = UDim2.new(0, 50, 0.3, 0)
+MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+MainFrame.BackgroundTransparency = 0.2
 MainFrame.Active = true
 MainFrame.Draggable = true
-MainFrame.ClipsDescendants = true
 MainFrame.Parent = ScreenGui
 
--- Сглаженные углы
-local UICorner = Instance.new("UICorner")
-UICorner.CornerRadius = UDim.new(0, 18)
-UICorner.Parent = MainFrame
-
--- Тень
-local Shadow = Instance.new("ImageLabel")
-Shadow.Size = UDim2.new(1, 20, 1, 20)
-Shadow.Position = UDim2.new(0, -10, 0, -10)
-Shadow.BackgroundTransparency = 1
-Shadow.Image = "rbxassetid://6014261993"
-Shadow.ImageColor3 = Color3.fromRGB(0, 0, 0)
-Shadow.ImageTransparency = 0.5
-Shadow.ScaleType = Enum.ScaleType.Slice
-Shadow.SliceCenter = Rect.new(10, 10, 118, 118)
-Shadow.Parent = MainFrame
-
--- Верхняя панель (заголовок)
-local TopBar = Instance.new("Frame")
-TopBar.Size = UDim2.new(1, 0, 0, 45)
-TopBar.BackgroundColor3 = Color3.fromRGB(35, 35, 55)
-TopBar.BorderSizePixel = 0
-TopBar.Parent = MainFrame
-
-local TopCorner = Instance.new("UICorner")
-TopCorner.CornerRadius = UDim.new(0, 18)
-TopCorner.Parent = TopBar
-
--- Градиент для верхней панели
-local Gradient = Instance.new("UIGradient")
-Gradient.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(70, 70, 140)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(40, 40, 90))
-})
-Gradient.Parent = TopBar
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 
 local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(0.7, 0, 1, 0)
-Title.Position = UDim2.new(0.1, 0, 0, 0)
-Title.BackgroundTransparency = 1
-Title.TextColor3 = Color3.fromRGB(255, 255, 255)
-Title.Text = "Blox Fruits Mobile"
-Title.TextScaled = true
+Title.Size = UDim2.new(1, 0, 0, 40)
+Title.BackgroundColor3 = Color3.fromRGB(50, 50, 150)
+Title.Text = "BLOX FRUITS MOBILE"
+Title.TextColor3 = Color3.new(1, 1, 1)
 Title.Font = Enum.Font.GothamBold
-Title.TextXAlignment = Enum.TextXAlignment.Left
-Title.Parent = TopBar
+Title.TextScaled = true
+Title.Parent = MainFrame
+Instance.new("UICorner", Title).CornerRadius = UDim.new(0, 10)
 
--- Версия
-local VersionLabel = Instance.new("TextLabel")
-VersionLabel.Size = UDim2.new(0.2, 0, 0.4, 0)
-VersionLabel.Position = UDim2.new(0.78, 0, 0.5, 0)
-VersionLabel.BackgroundTransparency = 1
-VersionLabel.TextColor3 = Color3.fromRGB(200, 200, 255)
-VersionLabel.Text = "v2.0"
-VersionLabel.TextScaled = true
-VersionLabel.Font = Enum.Font.Gotham
-VersionLabel.TextXAlignment = Enum.TextXAlignment.Right
-VersionLabel.Parent = TopBar
-
--- Кнопка сворачивания
-local MinimizeButton = Instance.new("ImageButton")
-MinimizeButton.Size = UDim2.new(0, 30, 0, 30)
-MinimizeButton.Position = UDim2.new(0.85, 0, 0.15, 0)
-MinimizeButton.BackgroundTransparency = 1
-MinimizeButton.Image = "rbxassetid://6031094678" -- Иконка минуса
-MinimizeButton.ImageColor3 = Color3.fromRGB(255, 255, 255)
-MinimizeButton.Parent = TopBar
-
--- Контейнер для контента (будет сворачиваться)
-local ContentFrame = Instance.new("Frame")
-ContentFrame.Size = UDim2.new(1, 0, 1, -45)
-ContentFrame.Position = UDim2.new(0, 0, 0, 45)
-ContentFrame.BackgroundTransparency = 1
-ContentFrame.Parent = MainFrame
-
--- Создание красивого скроллинг меню
-local ScrollingFrame = Instance.new("ScrollingFrame")
-ScrollingFrame.Size = UDim2.new(1, -10, 1, -10)
-ScrollingFrame.Position = UDim2.new(0, 5, 0, 5)
-ScrollingFrame.BackgroundTransparency = 1
-ScrollingFrame.ScrollBarThickness = 4
-ScrollingFrame.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 255)
-ScrollingFrame.CanvasSize = UDim2.new(0, 0, 0, 420)
-ScrollingFrame.Parent = ContentFrame
-
--- Функция создания кнопки-переключателя
-local function CreateToggle(name, yPos, icon, defaultColor)
-    local ToggleFrame = Instance.new("Frame")
-    ToggleFrame.Size = UDim2.new(0.95, 0, 0, 45)
-    ToggleFrame.Position = UDim2.new(0.025, 0, 0, yPos)
-    ToggleFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 45)
-    ToggleFrame.Parent = ScrollingFrame
-    
-    local ToggleCorner = Instance.new("UICorner")
-    ToggleCorner.CornerRadius = UDim.new(0, 12)
-    ToggleCorner.Parent = ToggleFrame
-    
-    local Icon = Instance.new("ImageLabel")
-    Icon.Size = UDim2.new(0, 25, 0, 25)
-    Icon.Position = UDim2.new(0, 10, 0.5, -12.5)
-    Icon.BackgroundTransparency = 1
-    Icon.Image = icon
-    Icon.ImageColor3 = defaultColor or Color3.fromRGB(255, 255, 255)
-    Icon.Parent = ToggleFrame
-    
-    local Label = Instance.new("TextLabel")
-    Label.Size = UDim2.new(0.5, 0, 1, 0)
-    Label.Position = UDim2.new(0.2, 0, 0, 0)
-    Label.BackgroundTransparency = 1
-    Label.TextColor3 = Color3.fromRGB(255, 255, 255)
-    Label.Text = name
-    Label.TextXAlignment = Enum.TextXAlignment.Left
-    Label.Font = Enum.Font.GothamSemibold
-    Label.TextSize = 16
-    Label.Parent = ToggleFrame
-    
-    local ToggleButton = Instance.new("TextButton")
-    ToggleButton.Size = UDim2.new(0.25, 0, 0.7, 0)
-    ToggleButton.Position = UDim2.new(0.7, 0, 0.15, 0)
-    ToggleButton.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
-    ToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-    ToggleButton.Text = "OFF"
-    ToggleButton.Font = Enum.Font.GothamBold
-    ToggleButton.TextSize = 14
-    ToggleButton.Parent = ToggleFrame
-    
-    local ButtonCorner = Instance.new("UICorner")
-    ButtonCorner.CornerRadius = UDim.new(0, 8)
-    ButtonCorner.Parent = ToggleButton
-    
-    return ToggleButton, ToggleFrame
+-- Функция создания кнопки
+function CreateButton(name, yPos, color)
+    local Button = Instance.new("TextButton")
+    Button.Size = UDim2.new(0.9, 0, 0, 40)
+    Button.Position = UDim2.new(0.05, 0, 0, yPos)
+    Button.BackgroundColor3 = color
+    Button.Text = name
+    Button.TextColor3 = Color3.new(1, 1, 1)
+    Button.Font = Enum.Font.GothamBold
+    Button.TextScaled = true
+    Button.Parent = MainFrame
+    Instance.new("UICorner", Button).CornerRadius = UDim.new(0, 8)
+    return Button
 end
 
--- Функция создания кнопки-цикла
-local function CreateCycleButton(name, yPos, icon, options)
-    local CycleFrame = Instance.new("Frame")
-    CycleFrame.Size = UDim2.new(0.95, 0, 0, 45)
-    CycleFrame.Position = UDim2.new(0.025, 0, 0, yPos)
-    CycleFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 45)
-    CycleFrame.Parent = ScrollingFrame
+-- Создаем кнопки
+local FarmButton = CreateButton("Auto Farm", 50, Color3.fromRGB(200, 50, 50))
+local SpeedUp = CreateButton("Speed +", 100, Color3.fromRGB(50, 150, 50))
+local SpeedDown = CreateButton("Speed -", 150, Color3.fromRGB(150, 50, 50))
+local JumpUp = CreateButton("Jump +", 200, Color3.fromRGB(50, 150, 150))
+local JumpDown = CreateButton("Jump -", 250, Color3.fromRGB(150, 50, 150))
+
+--===================================================================
+-- ФУНКЦИИ ДЛЯ ФАРМА
+--===================================================================
+
+-- Функция поиска врага
+function FindEnemy()
+    local closest = nil
+    local dist = math.huge
     
-    local CycleCorner = Instance.new("UICorner")
-    CycleCorner.CornerRadius = UDim.new(0, 12)
-    CycleCorner.Parent = CycleFrame
+    for _, v in pairs(workspace:GetDescendants()) do
+        if v:IsA("Model") and v ~= Character then
+            local hum = v:FindFirstChildOfClass("Humanoid")
+            local root = v:FindFirstChild("HumanoidRootPart")
+            
+            if hum and root and hum.Health > 0 then
+                local mag = (HRP.Position - root.Position).Magnitude
+                if mag < 100 and mag < dist then
+                    dist = mag
+                    closest = root
+                end
+            end
+        end
+    end
     
-    local Icon = Instance.new("ImageLabel")
-    Icon.Size = UDim2.new(0, 25, 0, 25)
-    Icon.Position = UDim2.new(0, 10, 0.5, -12.5)
-    Icon.BackgroundTransparency = 1
-    Icon.Image = icon
-    Icon.ImageColor3 = Color3.fromRGB(255, 200, 100)
-    Icon.Parent = CycleFrame
-    
-    local Label = Instance.new("TextLabel")
-    Label.Size = UDim2.new(0.5, 0, 1, 0)
-    Label.Position = UDim2.new(0.2, 0, 0, 0)
-    Label.BackgroundTransparency = 1
-    Label.TextColor3 = Color3.fromRGB(255, 255, 255)
-    Label.Text = name
-    Label.TextXAlignment = Enum.TextXAlignment.Left
-    Label.Font = Enum.Font.GothamSemibold
-    Label.TextSize = 16
-    Label.Parent = CycleFrame
-    
-    local CycleButton = Instance.new("TextButton")
-    CycleButton.Size = UDim2.new(0.25, 0, 0.7, 0)
-    CycleButton.Position = UDim2.new(0.7, 0, 0.15, 0)
-    CycleButton.BackgroundColor3 = Color3.fromRGB(80, 70, 120)
-    CycleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-    CycleButton.Text = options[1]
-    CycleButton.Font = Enum.Font.GothamBold
-    CycleButton.TextSize = 14
-    CycleButton.Parent = CycleFrame
-    
-    local ButtonCorner = Instance.new("UICorner")
-    ButtonCorner.CornerRadius = UDim.new(0, 8)
-    ButtonCorner.Parent = CycleButton
-    
-    return CycleButton, CycleFrame
+    return closest
 end
 
--- Создаем все кнопки
-local buttons = {}
-local currentY = 5
+-- Функция телепортации (безопасная)
+function Teleport(pos)
+    if pos then
+        HRP.CFrame = CFrame.new(pos.X, pos.Y + 3, pos.Z)
+    end
+end
 
--- Иконки (используем стандартные иконки Roblox)
-local icons = {
-    farm = "rbxassetid://6034500649",
-    quest = "rbxassetid://6034554346",
-    haki = "rbxassetid://6034633804",
-    boss = "rbxassetid://6034662844",
-    chest = "rbxassetid://6034691906",
-    flight = "rbxassetid://6034729272",
-    speed = "rbxassetid://6034763992",
-    jump = "rbxassetid://6034790281",
-    theme = "rbxassetid://6034828917"
-}
+--===================================================================
+-- ЛОГИКА КНОПОК
+--===================================================================
 
--- Основные функции
-buttons.farm = CreateToggle("Auto Farm", currentY, icons.farm, Color3.fromRGB(255, 100, 100))
-currentY = currentY + 50
-buttons.quest = CreateToggle("Auto Quest", currentY, icons.quest, Color3.fromRGB(100, 200, 255))
-currentY = currentY + 50
-buttons.haki = CreateToggle("Auto Haki", currentY, icons.haki, Color3.fromRGB(255, 200, 100))
-currentY = currentY + 50
-buttons.boss = CreateToggle("Auto Boss", currentY, icons.boss, Color3.fromRGB(255, 100, 255))
-currentY = currentY + 50
-buttons.chest = CreateToggle("Auto Chest", currentY, icons.chest, Color3.fromRGB(100, 255, 150))
-currentY = currentY + 50
-buttons.flight = CreateToggle("Flight", currentY, icons.flight, Color3.fromRGB(150, 150, 255))
-currentY = currentY + 50
-
--- Настройки (циклические кнопки)
-buttons.speed = CreateCycleButton("Speed", currentY, icons.speed, {"16", "28", "50", "70"})
-currentY = currentY + 50
-buttons.jump = CreateCycleButton("Jump Power", currentY, icons.jump, {"50", "75", "100", "150"})
-currentY = currentY + 50
-buttons.theme = CreateCycleButton("Theme", currentY, icons.theme, {"Dark", "Light", "Blue", "Purple"})
-
--- Обновляем CanvasSize
-ScrollingFrame.CanvasSize = UDim2.new(0, 0, 0, currentY + 10)
-
--- ═══════════════════════════════════════
---        ЛОГИКА КНОПОК
--- ═══════════════════════════════════════
-
--- Функция обновления цвета кнопки
-local function UpdateToggleButton(button, state)
-    if state then
-        button.BackgroundColor3 = Color3.fromRGB(50, 180, 50)
-        button.Text = "ON"
+FarmButton.MouseButton1Click:Connect(function()
+    AutoFarm = not AutoFarm
+    if AutoFarm then
+        FarmButton.BackgroundColor3 = Color3.fromRGB(50, 200, 50)
+        FarmButton.Text = "Auto Farm: ON"
     else
-        button.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
-        button.Text = "OFF"
-    end
-end
-
--- Auto Farm
-buttons.farm[1].MouseButton1Click:Connect(function()
-    Config.AutoFarm = not Config.AutoFarm
-    UpdateToggleButton(buttons.farm[1], Config.AutoFarm)
-end)
-
--- Auto Quest
-buttons.quest[1].MouseButton1Click:Connect(function()
-    Config.AutoQuest = not Config.AutoQuest
-    UpdateToggleButton(buttons.quest[1], Config.AutoQuest)
-end)
-
--- Auto Haki
-buttons.haki[1].MouseButton1Click:Connect(function()
-    Config.AutoHaki = not Config.AutoHaki
-    UpdateToggleButton(buttons.haki[1], Config.AutoHaki)
-end)
-
--- Auto Boss
-buttons.boss[1].MouseButton1Click:Connect(function()
-    Config.AutoBoss = not Config.AutoBoss
-    UpdateToggleButton(buttons.boss[1], Config.AutoBoss)
-end)
-
--- Auto Chest
-buttons.chest[1].MouseButton1Click:Connect(function()
-    Config.AutoChest = not Config.AutoChest
-    UpdateToggleButton(buttons.chest[1], Config.AutoChest)
-end)
-
--- Flight
-buttons.flight[1].MouseButton1Click:Connect(function()
-    Config.Flight = not Config.Flight
-    UpdateToggleButton(buttons.flight[1], Config.Flight)
-    if Config.Flight then
-        EnableFlight()
-    else
-        DisableFlight()
+        FarmButton.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+        FarmButton.Text = "Auto Farm: OFF"
     end
 end)
 
--- Speed cycle
-local speedValues = {16, 28, 50, 70}
-local speedIndex = 2
-buttons.speed[1].MouseButton1Click:Connect(function()
-    speedIndex = speedIndex % #speedValues + 1
-    Config.WalkSpeed = speedValues[speedIndex]
-    Humanoid.WalkSpeed = Config.WalkSpeed
-    buttons.speed[1].Text = tostring(Config.WalkSpeed)
+SpeedUp.MouseButton1Click:Connect(function()
+    Walkspeed = Walkspeed + 5
+    Humanoid.WalkSpeed = Walkspeed
+    SpeedUp.Text = "Speed + (" .. Walkspeed .. ")"
 end)
 
--- Jump cycle
-local jumpValues = {50, 75, 100, 150}
-local jumpIndex = 1
-buttons.jump[1].MouseButton1Click:Connect(function()
-    jumpIndex = jumpIndex % #jumpValues + 1
-    Config.JumpPower = jumpValues[jumpIndex]
-    Humanoid.JumpPower = Config.JumpPower
-    buttons.jump[1].Text = tostring(Config.JumpPower)
+SpeedDown.MouseButton1Click:Connect(function()
+    Walkspeed = math.max(16, Walkspeed - 5)
+    Humanoid.WalkSpeed = Walkspeed
+    SpeedDown.Text = "Speed - (" .. Walkspeed .. ")"
 end)
 
--- Theme cycle
-local themes = {
-    Dark = {bg = Color3.fromRGB(20, 20, 35), top = Color3.fromRGB(35, 35, 55)},
-    Light = {bg = Color3.fromRGB(240, 240, 255), top = Color3.fromRGB(200, 200, 255)},
-    Blue = {bg = Color3.fromRGB(30, 40, 70), top = Color3.fromRGB(50, 70, 120)},
-    Purple = {bg = Color3.fromRGB(40, 25, 60), top = Color3.fromRGB(70, 45, 100)}
-}
-local themeNames = {"Dark", "Light", "Blue", "Purple"}
-local themeIndex = 1
-
-buttons.theme[1].MouseButton1Click:Connect(function()
-    themeIndex = themeIndex % #themeNames + 1
-    Config.Theme = themeNames[themeIndex]
-    buttons.theme[1].Text = Config.Theme
-    
-    -- Применяем тему
-    local theme = themes[Config.Theme]
-    MainFrame.BackgroundColor3 = theme.bg
-    TopBar.BackgroundColor3 = theme.top
+JumpUp.MouseButton1Click:Connect(function()
+    JumpPower = JumpPower + 10
+    Humanoid.JumpPower = JumpPower
+    JumpUp.Text = "Jump + (" .. JumpPower .. ")"
 end)
 
--- ═══════════════════════════════════════
---        ФУНКЦИОНАЛ
--- ═══════════════════════════════════════
+JumpDown.MouseButton1Click:Connect(function()
+    JumpPower = math.max(50, JumpPower - 10)
+    Humanoid.JumpPower = JumpPower
+    JumpDown.Text = "Jump - (" .. JumpPower .. ")"
+end)
 
--- Anti-cheat bypass
-local function SafeTP(pos)
-    local origin = HRP.CFrame
-    local goal = CFrame.new(pos)
-    for i = 1, 8 do
-        HRP.CFrame = origin:Lerp(goal, i/8)
-        task.wait(0.04)
-    end
-end
+--===================================================================
+-- ГЛАВНЫЙ ЦИКЛ
+--===================================================================
 
--- Поиск мобов
-local function GetMob(isBoss)
-    local nearest, dist = nil, math.huge
-    for _, m in ipairs(workspace:GetDescendants()) do
-        if m:IsA("Model") and m ~= Character then
-            local hum = m:FindFirstChildOfClass("Humanoid")
-            local hrp = m:FindFirstChild("HumanoidRootPart")
-            if hum and hrp and hum.Health > 0 then
-                -- Проверка на босса (по имени или размеру)
-                local isBossCheck = m.Name:lower():find("boss") or m.Name:lower():find("factory") or hum.MaxHealth > 5000
-                if isBoss and not isBossCheck then continue end
-                if not isBoss and isBossCheck then continue end
-                
-                local d = (HRP.Position - hrp.Position).Magnitude
-                if d < dist and d < Config.FarmRadius then
-                    dist, nearest = d, {hrp = hrp, hum = hum}
-                end
-            end
+game:GetService("RunService").Heartbeat:Connect(function()
+    if AutoFarm then
+        local enemy = FindEnemy()
+        if enemy then
+            Teleport(enemy.Position)
+            -- Автоматическая атака (имитация клика)
+            game:GetService("VirtualInputManager"):SendMouseButtonEvent(0, 0, 0, true, nil, 1)
+            task.wait(0.1)
+            game:GetService("VirtualInputManager"):SendMouseButtonEvent(0, 0, 0, false, nil, 1)
         end
     end
-    return nearest
-end
-
--- Поиск сундуков
-local function GetChest()
-    local nearest, dist = nil, math.huge
-    for _, v in ipairs(workspace:GetDescendants()) do
-        if v.Name:lower():find("chest") or v.Name:lower():find("box") then
-            if v:IsA("Part") or v:IsA("Model") then
-                local pos = v:IsA("Model") and v.PrimaryPart and v.PrimaryPart.Position or v.Position
-                if pos then
-                    local d = (HRP.Position - pos).Magnitude
-                    if d < dist and d < 100 then
-                        dist, nearest = d, pos
-                    end
-                end
-            end
-        end
-    end
-    return nearest
-end
-
--- Авто Хаки
-local function UseHaki()
-    if Config.AutoHaki then
-        local args = {
-            [1] = "Activate",
-            [2] = "Observation"
-        }
-        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Haki"):InvokeServer(unpack(args))
-        
-        wait(2)
-        
-        local args2 = {
-            [1] = "Activate",
-            [2] = "Armament"
-        }
-        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Haki"):InvokeServer(unpack(args2))
-    end
-end
-
--- Полёт
-local BodyVel, BodyGyro
-
-local function EnableFlight()
-    Humanoid.PlatformStand = true
-    BodyVel = Instance.new("BodyVelocity")
-    BodyVel.MaxForce = Vector3.new(1e5,1e5,1e5)
-    BodyVel.Velocity = Vector3.zero
-    BodyVel.Parent = HRP
-    
-    BodyGyro = Instance.new("BodyGyro")
-    BodyGyro.MaxTorque = Vector3.new(1e5,1e5,1e5)
-    BodyGyro.D = 50
-    BodyGyro.Parent = HRP
-    
-    -- Управление полетом
-    local flightLoop
-    flightLoop = RunService.Heartbeat:Connect(function()
-        if Config.Flight and BodyVel then
-            BodyVel.Velocity = Vector3.new(0, 20, 0)
-        end
-    end)
-end
-
-local function DisableFlight()
-    Config.Flight = false
-    Humanoid.PlatformStand = false
-    if BodyVel then BodyVel:Destroy() BodyVel = nil end
-    if BodyGyro then BodyGyro:Destroy() BodyGyro = nil end
-end
-
--- Сворачивание меню
-MinimizeButton.MouseButton1Click:Connect(function()
-    Config.Minimized = not Config.Minimized
-    
-    local targetSize = Config.Minimized and UDim2.new(0, 220, 0, 45) or UDim2.new(0, 220, 0, 380)
-    local targetIcon = Config.Minimized and "rbxassetid://6031094734" or "rbxassetid://6031094678" -- Плюс/минус
-    
-    local tween = TweenService:Create(MainFrame, TweenInfo_Expand, {Size = targetSize})
-    tween:Play()
-    
-    MinimizeButton.Image = targetIcon
-    ContentFrame.Visible = not Config.Minimized
 end)
 
--- ═══════════════════════════════════════
---          ГЛАВНЫЙ ЦИКЛ
--- ═══════════════════════════════════════
-task.spawn(function()
-    while task.wait(0.15) do
-        pcall(function()
-            -- Auto Farm
-            if Config.AutoFarm then
-                local mob = GetMob(false)
-                if mob then
-                    if (HRP.Position - mob.hrp.Position).Magnitude > 7 then
-                        SafeTP(mob.hrp.Position + Vector3.new(0, 3, 4))
-                    end
-                    Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-                end
-            end
-            
-            -- Auto Boss
-            if Config.AutoBoss then
-                local boss = GetMob(true)
-                if boss then
-                    if (HRP.Position - boss.hrp.Position).Magnitude > 7 then
-                        SafeTP(boss.hrp.Position + Vector3.new(0, 3, 4))
-                    end
-                    Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-                end
-            end
-            
-            -- Auto Chest
-            if Config.AutoChest then
-                local chestPos = GetChest()
-                if chestPos then
-                    if (HRP.Position - chestPos).Magnitude > 5 then
-                        SafeTP(chestPos + Vector3.new(0, 2, 0))
-                    end
-                end
-            end
-            
-            -- Auto Haki (каждые 30 секунд)
-            if Config.AutoHaki and tick() % 30 < 0.1 then
-                UseHaki()
-            end
-        end)
-    end
+-- Защита от афк
+local vu = game:GetService("VirtualUser")
+Player.Idled:Connect(function()
+    vu:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+    task.wait(1)
+    vu:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
 end)
 
--- Anti-AFK
-task.spawn(function()
-    while task.wait(55) do
-        pcall(function()
-            Player:Move(Vector3.new(1,0,0))
-            task.wait(0.2)
-            Player:Move(Vector3.new(0,0,0))
-        end)
-    end
-end)
-
--- Обработка смерти
-Player.CharacterAdded:Connect(function(char)
-    Character = char
-    HRP = char:WaitForChild("HumanoidRootPart")
-    Humanoid = char:WaitForChild("Humanoid")
-    task.wait(2)
-    Humanoid.WalkSpeed = Config.WalkSpeed
-    Humanoid.JumpPower = Config.JumpPower
-end)
-
-print("✅ Blox Fruits Mobile Script V2 загружен! Меню появилось на экране.")
+print("Скрипт загружен! Меню появилось на экране.")
